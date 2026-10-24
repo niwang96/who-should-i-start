@@ -107,6 +107,8 @@ class GameRow(TypedDict):
     gameday: str | None
     home_team: str
     away_team: str
+    spread_line: float | None  # betting spread, home team's view: positive = home favored by that many
+    total_line: float | None  # betting over/under for the game's combined points
 
 
 class RankingRow(TypedDict):
@@ -171,6 +173,15 @@ class NewsFactRow(TypedDict):
     summary: str  # restates only the item's own text
 
 
+class DecisionCacheRow(TypedDict):
+    """A validated LLM decision, keyed by a hash of the model, prompt version and exact packet text."""
+
+    cache_key: str
+    created_at: str
+    model: str
+    decision_json: str
+
+
 # Postgres REAL is single precision, so floats are DOUBLE PRECISION (same meaning in SQLite).
 _SQL_TYPES: dict[type, str] = {str: "TEXT", int: "INTEGER", float: "DOUBLE PRECISION"}
 _POLARS_TYPES: dict[type, type[pl.DataType]] = {str: pl.String, int: pl.Int64, float: pl.Float64}
@@ -204,6 +215,11 @@ class Table:
         cols.append(f"    PRIMARY KEY ({', '.join(self.key)})")
         return f"CREATE TABLE IF NOT EXISTS {self.name} (\n" + ",\n".join(cols) + "\n);"
 
+    def column_ddl(self, name: str) -> str:
+        """Type clause for one column, for ALTER TABLE ... ADD COLUMN (always nullable)."""
+        base, _ = _column_types(self.row)[name]
+        return f"{name} {_SQL_TYPES[base]}"
+
     def polars_schema(self) -> dict[str, type[pl.DataType]]:
         return {name: _POLARS_TYPES[base] for name, (base, _) in _column_types(self.row).items()}
 
@@ -221,6 +237,7 @@ TABLES: dict[str, Table] = {
         Table("news_items", NewsItemRow, ("item_id",)),
         Table("news_extractions", NewsExtractionRow, ("item_id",)),
         Table("news_facts", NewsFactRow, ("item_id", "player_id")),
+        Table("decision_cache", DecisionCacheRow, ("cache_key",)),
     )
 }
 
@@ -276,6 +293,35 @@ class Database:
             self.conn = sqlite3.connect(target)
             self.conn.row_factory = sqlite3.Row
             self.conn.executescript(SCHEMA)
+        self._add_missing_columns()
+
+    def _existing_columns(self) -> dict[str, set[str]]:
+        """Columns of every table that exists, by table name."""
+        if self.is_postgres:
+            rows = self.query(
+                "SELECT table_name AS t, column_name AS c FROM information_schema.columns "
+                "WHERE table_schema = current_schema()"
+            )
+            out: dict[str, set[str]] = {}
+            for r in rows:
+                out.setdefault(r["t"], set()).add(r["c"])
+            return out
+        return {t: {r["name"] for r in self.query(f"PRAGMA table_info({t})")} for t in TABLES}
+
+    def _add_missing_columns(self) -> None:
+        """Schema migration for added columns: CREATE TABLE IF NOT EXISTS leaves existing tables alone.
+
+        Columns added this way must be nullable in the row type, since existing rows have no value.
+        """
+        existing = self._existing_columns()
+        for table in TABLES.values():
+            missing = [c for c in table.columns if c not in existing.get(table.name, set())]
+            for column in missing:
+                if not _column_types(table.row)[column][1]:
+                    raise RuntimeError(
+                        f"new column {table.name}.{column} must be nullable to be added to existing rows"
+                    )
+                self.execute(f"ALTER TABLE {table.name} ADD COLUMN {table.column_ddl(column)}")
 
     def __enter__(self) -> Database:
         return self
@@ -379,6 +425,11 @@ class Database:
             ),
         )
 
+    def cached_decision(self, cache_key: str) -> DecisionCacheRow | None:
+        return cast(
+            "DecisionCacheRow | None", self._one("SELECT * FROM decision_cache WHERE cache_key = ?", (cache_key,))
+        )
+
     def all_players(self) -> list[PlayerRow]:
         return cast("list[PlayerRow]", self.query("SELECT * FROM players"))
 
@@ -440,6 +491,15 @@ class Database:
 
     def latest_played_week(self, season: int) -> int | None:
         return cast("int | None", self._scalar("SELECT max(week) AS w FROM player_weeks WHERE season = ?", (season,)))
+
+    def team_game(self, season: int, week: int, team: str) -> GameRow | None:
+        return cast(
+            "GameRow | None",
+            self._one(
+                f"SELECT * FROM games g WHERE season = ? AND week = ? AND {_PLAYS.format('?')}",
+                (season, week, team, team),
+            ),
+        )
 
     def week_has_games(self, season: int, week: int) -> bool:
         return self._one("SELECT 1 AS x FROM games WHERE season = ? AND week = ? LIMIT 1", (season, week)) is not None

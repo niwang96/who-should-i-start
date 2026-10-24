@@ -195,7 +195,7 @@ def build_injuries(raw: RawNflverse) -> pl.DataFrame:
 
 
 def build_games(raw: RawNflverse) -> pl.DataFrame:
-    """Regular-season games; also how byes are detected (a team with no game that week)."""
+    """Regular-season games with betting lines; also how byes are detected (a team with no game that week)."""
     return (
         raw.schedules.filter(pl.col("game_type") == "REG")
         .select(
@@ -204,6 +204,8 @@ def build_games(raw: RawNflverse) -> pl.DataFrame:
             pl.col("gameday").cast(pl.String),
             "home_team",
             "away_team",
+            pl.col("spread_line").cast(pl.Float64),
+            pl.col("total_line").cast(pl.Float64),
         )
         .sort("game_id")
     )

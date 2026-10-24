@@ -2,8 +2,8 @@
 Fantasy Football helper for deciding which player to start.
 
 ## Status
-Build step 2 of 6 (see `CLAUDE.md`): ingest + usage features (step 1), weekly consensus rankings,
-baseline score, and evidence packet (step 2).
+Build step 4 of 6 (see `CLAUDE.md`): ingest and usage features, consensus rankings, baseline and
+evidence packet, news extraction, and the AI decision. Next: web UI and recommendation logging.
 
 ## Setup
 ```bash
@@ -65,6 +65,16 @@ cached in `news_extractions` (keyed by the feed's guid, else the link), so no it
 daily.
 
 Tables: `news_items`, `news_extractions` (the per-URL LLM cache), `news_facts`, `llm_calls`.
+
+## Decision (Stage 3)
+```bash
+python -m startsit.decide "Josh Jacobs" "Saquon Barkley" --scoring ppr
+```
+prints the evidence packet and the AI's pick: confidence, 2–3 deciding factors with the evidence
+ids they rely on, and, when it overrides the baseline, why. Code checks every cited id against the
+packet, retries once with the problems, and otherwise falls back to the baseline pick with a note
+(also when the daily AI budget of 400 calls is spent or Gemini is down). Answers are cached by the
+exact packet text, so a repeat question costs nothing until the evidence changes.
 
 ## Baseline and evidence packet (Stage 2)
 ```bash
