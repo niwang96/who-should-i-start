@@ -21,7 +21,7 @@ Purpose: portfolio/resume project. It should have real users beyond the author (
 ### FantasyPros API — expert consensus (+ news)
 - Free public API for **personal, non-commercial use**; request a key at secure.fantasypros.com/api-keys/request with a description of intended use.
 - Terms: must not build a product that directly competes with FantasyPros; must cite FantasyPros as the source; player images (Sportradar-licensed) can't be used.
-- Free keys may return only a sample slice of some datasets (e.g., full projections). **Test what the key actually returns before designing around it.**
+- Free keys return at most 10 rows per call (tested Oct 24 2026; details under Open to-dos).
 - In the access request, describe it as a free, non-commercial portfolio project that uses their consensus as one input alongside news/usage analysis.
 
 ### nflverse — usage and stats
@@ -71,19 +71,56 @@ Follow the two-level pattern from the reference repo:
 - **L2:** permanent per-item LLM extraction cache keyed by source URL.
 Many users will ask about the same players, so cache per-player results.
 
-## Free-tier stack candidates (confirm current limits before committing)
-- **LLM:** Gemini API free tier, Groq, or free models on OpenRouter. Use a provider abstraction so the model can be swapped.
-- **Hosting:** Vercel or Cloudflare (Pages/Workers).
-- **DB/auth:** Supabase (Postgres; pgvector if needed).
-- **Scheduled jobs:** GitHub Actions cron.
+## Stack (decided)
+- **Language:** Python everywhere (author is primarily a Java dev; Python chosen for the nflverse/LLM ecosystem and resume range).
+- **Ingest:** Python jobs (`nflreadpy`) run by GitHub Actions cron, writing to Supabase.
+- **Web app:** FastAPI on Vercel's free Python functions; simple HTMX/Jinja frontend (no JS framework for MVP).
+- **DB:** Supabase (Postgres) via `DATABASE_URL` (session pooler URI; the direct connection is IPv6-only, which Actions/Vercel can't reach; the Claude Code cloud env can't reach Postgres at all). Local SQLite when unset. All SQL lives in `startsit/db.py` and is written once for both backends; tests run on both.
+- **Code quality:** ruff (lint + format) and mypy run in CI alongside pytest.
+- **LLM:** Gemini free tier, model **`gemini-3.5-flash-lite`** (decided Oct 24 2026; 500 requests/day vs 20 for `gemini-3.5-flash`). Read the model id from `GEMINI_MODEL` (default `gemini-3.5-flash-lite`) behind a provider interface so it can be swapped. Newer Flash versions listed on the key (3.6/3.7/3.8) aren't usable for this project. Unit tests use a fake provider and never call a real LLM.
+
+## Secrets
+- Read keys only from environment variables: `GEMINI_API_KEY`, `FANTASYPROS_API_KEY`. Never commit them, print them, or log them; keep `.env` gitignored and provide `.env.example`.
+- Claude Code cloud env: keys are plain env vars (the network-secret types — Bearer/Body param/Basic/SigV4/GCP token — don't fit Gemini's `x-goog-api-key` header). The Gemini key there is a dev-only key with billing off.
+- GitHub Actions: repository secrets. Vercel: project environment variables.
+
+## Build order
+1. Skeleton + nflverse ingest + usage features + Actions cron
+2. ~~Baseline score + evidence packet~~ (done Oct 24 2026): FF Rankings as the consensus; baseline is 100% consensus for now (decided: add usage weighting only if the evaluation shows it helps; FantasyPros API add-on deferred)
+3. RSS news + cached LLM extraction (L2 cache keyed by URL)
+4. Stage 3 decide call with structured output, validated against packet evidence IDs
+5. Web UI + recommendation logging
+6. Weekly evaluation, then Reddit as an optional signal
 
 ## Open to-dos
-- [ ] Request FantasyPros API key (approval may take time) and test what a free key returns
+- [x] Request FantasyPros API key (approved; key received)
+- [x] Test what the free FantasyPros key returns (Oct 24 2026, from the Claude Code cloud env after allowlisting `api.fantasypros.com`; re-run with `scripts/probe_fantasypros.py`, which never prints the key):
+  - Auth: `x-api-key` header. Base URL: `https://api.fantasypros.com/public/v2/json/nfl`. Every response includes `tier: "free"` and `limit: 10`.
+  - **The free tier returns at most 10 rows per call.** `limit`, `offset`, `start` and `page` are ignored, so there's no paging. `count` still reports the full total (e.g., 378 for weekly FLX ECR).
+  - `GET /2026/consensus-rankings?position=ALL|QB|RB|WR|TE|K|DST&type=weekly&scoring=PPR|HALF|STD&week=N`: all three scoring values work and are echoed back. An unknown scoring value silently falls back to `STD`. With no `week`, the API returns the current week (7 on Oct 24); `week=8` returns 0 players. Each row has `rank_ecr`, `pos_rank`, `rank_ave/min/max/std`, opponent, game status and ownership. Single-position calls also include `start_sit_grade` (e.g., "A+"), `tag` ("start"), and `r2p_pts` (projected points). No player-ID filter works here, so **ECR only covers the top 10 at each position**, which isn't enough for real start/sit questions.
+  - `GET /2026/projections?position=WR&players=<fpid,...>`: the `players` filter works (with a single position, not `ALL`) and reaches beyond the top 10 (e.g., DeVonta Smith). Each row has `points`, `points_ppr` and `points_half` regardless of the `scoring` param. Some players came back empty (e.g., Rashee Rice, Emeka Egbuka); the cause is unknown, so handle a missing projection. This is the best usable per-player FantasyPros signal; `fpid` = `player_id`.
+  - `GET /news`, `/injuries`, `/players`: 10 newest/top rows only, and no player or team filter worked. Injuries include `probability_of_playing` and Wed/Thu/Fri practice status (e.g., Limited/DNP), which is useful but limited to 10 players. News rows include title, description, `player_id` and a link.
+  - **Rate limit:** no rate-limit headers are sent, but after ~75–80 calls in one session (Oct 24 2026) every endpoint returned `429 {"message":"Limit Exceeded"}`. That's an AWS API Gateway usage-plan quota (likely daily). Budget calls: ingest on a schedule and cache, never call per user query.
+  - `GET /compare-players?players=<id>:<id>[:<id>]&position=WR|RB|...` (no season in the path; colon-delimited IDs): returns, for each scoring format (STD/PPR/HALF), **every expert's individual rank for each player**. This is the data behind FantasyPros' "Who Should I Start" tool, so code can compute "X of N experts start A over B". `position=ALL` returns empty lists. With PPR/HALF/STD, a non-top-10 player and a mixed-position pair still untested (hit the quota first).
+  - Implication: nflverse FF Rankings stays the primary consensus source. Use FantasyPros per-player projections (and top-10 ECR/start-sit grade when available) as a supplementary, cited signal.
+- [x] Verify `GEMINI_API_KEY` works from the Claude Code cloud env (Oct 24 2026: `gemini-3.5-flash` OK; `gemini-2.5-flash` returns 404 "no longer available to new users")
 - [ ] Verify RSS feed URLs
 - [ ] Test Reddit `.json` access from the deployed environment
-- [ ] Check nflverse FF Rankings / FF Opportunity contents and update cadence
-- [ ] Choose LLM provider and confirm free-tier limits
-- [ ] Draft evidence packet schema and Stage 3 prompt
+- [x] FF Opportunity: 2026 data through the latest week; expected points are PPR-scored (derive half/std via `receptions_exp`)
+- [x] FF Rankings weekly (`fp_latest_weekly.csv`, Oct 24 2026): `load_ff_rankings('week')` 403s here because the proxy blocks `github.com/.../raw/...`, but the same file loads from `https://raw.githubusercontent.com/dynastyprocess/data/master/files/fp_latest_weekly.csv`. It's a scrape of FantasyPros' full weekly ECR for **every** ranked player (1006 rows, `scrape_date` 2026-10-23), with `ecr`, `sd`, `best`, `worst`, `pos_rank`, `start_sit_grade`, `r2p_pts`, opponent and game status. Pages: `qb`, `ppr-rb`, `ppr-wr`, `ppr-te`, `k`, `dst` (+ IDP). **PPR only** for skill positions, so no half/std ECR. Keyed by `fantasypros_id` (same as the API `player_id`). It's FantasyPros data, so cite FantasyPros. Ingested by `startsit.ingest.rankings` (archived per `scrape_date`; week inferred from kickoff dates vs. the schedule, since the file has no week column). Still to check: update cadence across the week.
+- [ ] nflverse injuries lag: on Oct 24 (Sat) week 7 rows had practice status but no game status yet (e.g., Puka Nacua "Limited" in nflverse while the FantasyPros API showed Friday DNP + Questionable). Status zeroing in the baseline only fires once nflverse posts "Out". Consider the FantasyPros `/injuries` endpoint (top 10 only) or RSS news (step 3) for fresher status.
+- [ ] Deferred FantasyPros API add-on: per-player projections in all three formats (fills the PPR-only ECR gap) + `compare-players` expert head-to-head; needs a call budget under the ~75-call quota.
+- [x] Gemini free-tier limits (author's AI Studio, Oct 24 2026), per model:
+  - `gemini-3.5-flash-lite` (**chosen**): 15 requests/minute, 500 requests/day, 250k input tokens/minute.
+  - `gemini-3.5-flash`: 1 request/minute, 20 requests/day, 250k input tokens/minute; too few requests for real users.
+  - Requests, not tokens, are the constraint. Step 3: batch news extraction (one call carries all new headlines), so ingest uses ~1–5 calls/day. Step 4: cache decisions per (players, scoring, week); when the daily budget is spent, fall back to the code baseline with a clear "daily AI limit reached" note.
+  - Step 4 check: run ~10 matchups through both Lite and Flash (~20 requests) and compare reasoning quality before finalizing the decision prompt.
+- [x] Draft evidence packet schema (`startsit.evidence`: numbered items E1..En with kind/text/source_url; `to_text()` is what the LLM sees)
+- [ ] Draft Stage 3 prompt
+- Decided Oct 24 2026: the baseline zeroes every player whose weekly roster status isn't Active (reserve/IR, practice squad, exempt, inactive, released, retired), not just cut/retired. nflverse can lag an activation by a day or two; the packet's roster-status item shows the LLM why.
+- Decided Oct 24 2026: the "current week" is the latest week with rankings, so after Monday night the app keeps answering for the finished week until the new week's rankings arrive (normally Tuesday). Step 5's UI should say which week it's answering for.
+- [ ] Step 5: store the full evidence packet (text + item ids) with each logged recommendation. Injury reports and roster status are overwritten as they update, so the packet is the only record of what the user and LLM saw.
+- [ ] Confirm the Supabase connection via a manual run of the ingest workflow (needs `ingest.yml` on `main`). The Claude Code cloud env **can't** reach Postgres (Oct 24 2026): its proxy carries only HTTP/HTTPS, and raw-TCP databases are unsupported, so allowlisting doesn't help. Development and tests there use SQLite and a local Postgres; Supabase is reached only from GitHub Actions, Vercel, or a laptop. `DATABASE_URL` must percent-encode special characters in the password (e.g. `#` → `%23`), or the value gets cut off when saved.
 
 ## Timing
 The NFL regular season runs through early January. Shipping an MVP within ~2–3 weeks leaves time to collect real usage and several weeks of evaluation data.

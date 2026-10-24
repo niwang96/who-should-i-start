@@ -1,0 +1,51 @@
+name: ingest
+
+on:
+  schedule:
+    # Daily; nflverse publishes stats/snaps in batches after games, so a daily
+    # full-season refresh picks up each update within a day. Each run also archives
+    # that day's FantasyPros weekly rankings scrape.
+    - cron: "17 10 * * *"
+  workflow_dispatch:
+    inputs:
+      season:
+        description: "Season to ingest (default: current)"
+        required: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Supabase when the secret is set; otherwise a fresh SQLite file uploaded as an artifact.
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      STARTSIT_DB_PATH: data/startsit.db
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -e .
+      - name: Ingest nflverse + rankings
+        env:
+          SEASON: ${{ inputs.season }}
+        run: python -m startsit.ingest ${SEASON:+--season "$SEASON"}
+      - name: Summarize
+        run: |
+          python - >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          from startsit.db import Database
+          with Database() as db:
+              print(f"Database: {'Postgres' if db.is_postgres else 'SQLite'}\n")
+              print("| source | season | max week | rows |\n|---|---|---|---|")
+              for r in db.recent_runs(7):
+                  print(f"| {r['source']} | {r['season']} | {r['max_week']} | {r['row_count']} |")
+          PY
+      # Without Supabase, keep the SQLite file as an artifact. Each run is a full-season
+      # refresh, but rankings history only accumulates in a persistent database.
+      - if: ${{ env.DATABASE_URL == '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: startsit-db
+          path: data/startsit.db
+          retention-days: 7

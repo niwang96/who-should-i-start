@@ -1,0 +1,384 @@
+"""Data-access layer: the only module that contains SQL.
+
+Two backends behind one class: SQLite (a file path, for local work and tests) and
+Postgres (a postgres:// URL, i.e. Supabase). SQL is written once with `?` placeholders
+and only uses syntax both accept; the Postgres backend translates the placeholders.
+Callers use the named query methods below, so they never depend on the backend.
+
+Each table is defined once, as a TypedDict of its columns plus its primary key (`Table`).
+The CREATE TABLE statement, the polars schema used to build frames for it, and the
+typed rows the query methods return all come from that one definition.
+"""
+
+from __future__ import annotations
+
+import os
+import sqlite3
+import types
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from types import TracebackType
+from typing import Any, TypedDict, cast, get_args, get_type_hints
+
+import polars as pl
+
+DEFAULT_DB_PATH = "data/startsit.db"
+
+
+# --- table definitions -------------------------------------------------------------
+
+
+class PlayerRow(TypedDict):
+    player_id: str  # nflverse GSIS id
+    name: str
+    position: str
+    team: str | None  # latest roster team
+    pfr_id: str | None
+
+
+class RosterRow(TypedDict):
+    player_id: str
+    season: int
+    week: int
+    team: str | None
+    status: str | None  # ACT, RES (IR/PUP/NFI), DEV (practice squad), CUT, RET, INA, EXE, ...
+
+
+class PlayerWeekRow(TypedDict):
+    player_id: str
+    season: int
+    week: int
+    team: str | None
+    opponent: str | None
+    offense_snaps: int | None
+    snap_pct: float | None
+    targets: int | None
+    carries: int | None
+    receptions: int | None
+    target_share: float | None
+    air_yards_share: float | None
+    wopr: float | None
+    fp_ppr: float | None
+    fp_half: float | None
+    fp_std: float | None
+    xfp_ppr: float | None  # expected points from usage (FF Opportunity)
+    xfp_half: float | None
+    xfp_std: float | None
+
+
+class InjuryRow(TypedDict):
+    """Overwritten as reports update; recommendations must store the packet they used."""
+
+    player_id: str
+    season: int
+    week: int
+    team: str | None
+    report_status: str | None
+    practice_status: str | None
+    injury: str | None
+
+
+class UsageRow(TypedDict):
+    player_id: str
+    season: int
+    through_week: int
+    games: int
+    last_game_week: int  # features go stale if this lags through_week
+    snap_pct_l3: float | None
+    snap_pct_trend: float | None
+    target_share_l3: float | None
+    opportunities_l3: float | None
+    fp_ppr_l3: float
+    fp_half_l3: float
+    fp_std_l3: float
+    xfp_ppr_l3: float
+    xfp_half_l3: float
+    xfp_std_l3: float
+    xfp_ppr_season: float
+    fp_minus_xfp_ppr_l3: float
+
+
+class GameRow(TypedDict):
+    game_id: str
+    season: int
+    week: int
+    gameday: str | None
+    home_team: str
+    away_team: str
+
+
+class RankingRow(TypedDict):
+    """FantasyPros weekly ECR, one archived copy per scrape (see startsit.ingest.rankings)."""
+
+    season: int
+    week: int
+    scrape_date: str
+    fantasypros_id: str
+    player_id: str | None  # GSIS id; null for the few players the id map lacks
+    player_name: str
+    position: str
+    team: str | None  # FantasyPros abbreviations (LAR, not nflverse's LA)
+    opponent: str | None  # e.g. "vs. DAL", "at LV"
+    ecr: float | None  # average expert rank within position
+    ecr_sd: float | None
+    ecr_best: float | None
+    ecr_worst: float | None
+    proj_ppr: float | None  # FantasyPros rank-to-points, PPR scoring
+    pos_rank: str | None
+    start_sit_grade: str | None
+    game_status: str | None
+    source_url: str | None
+
+
+# Postgres REAL is single precision, so floats are DOUBLE PRECISION (same meaning in SQLite).
+_SQL_TYPES: dict[type, str] = {str: "TEXT", int: "INTEGER", float: "DOUBLE PRECISION"}
+_POLARS_TYPES: dict[type, type[pl.DataType]] = {str: pl.String, int: pl.Int64, float: pl.Float64}
+
+
+def _column_types(row: type) -> dict[str, tuple[type, bool]]:
+    """Column name -> (base type, nullable), from a TypedDict's annotations."""
+    out = {}
+    for name, hint in get_type_hints(row).items():
+        args = get_args(hint)
+        nullable = isinstance(hint, types.UnionType) and type(None) in args
+        out[name] = (next(a for a in args if a is not type(None)) if nullable else hint, nullable)
+    return out
+
+
+@dataclass(frozen=True)
+class Table:
+    name: str
+    row: type  # the TypedDict describing one row
+    key: tuple[str, ...]
+
+    @property
+    def columns(self) -> list[str]:
+        return list(get_type_hints(self.row))
+
+    def ddl(self) -> str:
+        cols = [
+            f"    {name} {_SQL_TYPES[base]}{'' if nullable else ' NOT NULL'}"
+            for name, (base, nullable) in _column_types(self.row).items()
+        ]
+        cols.append(f"    PRIMARY KEY ({', '.join(self.key)})")
+        return f"CREATE TABLE IF NOT EXISTS {self.name} (\n" + ",\n".join(cols) + "\n);"
+
+    def polars_schema(self) -> dict[str, type[pl.DataType]]:
+        return {name: _POLARS_TYPES[base] for name, (base, _) in _column_types(self.row).items()}
+
+
+TABLES: dict[str, Table] = {
+    t.name: t
+    for t in (
+        Table("players", PlayerRow, ("player_id",)),
+        Table("roster_weeks", RosterRow, ("player_id", "season", "week")),
+        Table("player_weeks", PlayerWeekRow, ("player_id", "season", "week")),
+        Table("injuries", InjuryRow, ("player_id", "season", "week")),
+        Table("usage_features", UsageRow, ("player_id", "season", "through_week")),
+        Table("games", GameRow, ("game_id",)),
+        Table("rankings", RankingRow, ("season", "week", "scrape_date", "fantasypros_id")),
+    )
+}
+
+# An append-only log with a database-side default, so it's written by hand.
+INGEST_RUNS_DDL = """CREATE TABLE IF NOT EXISTS ingest_runs (
+    source       TEXT NOT NULL,
+    season       INTEGER NOT NULL,
+    max_week     INTEGER,
+    row_count    INTEGER NOT NULL,
+    finished_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);"""
+
+SCHEMA = "\n\n".join([*(t.ddl() for t in TABLES.values()), INGEST_RUNS_DDL])
+ALL_TABLE_NAMES = (*TABLES, "ingest_runs")
+
+
+# A games row (alias g) involving a team; the placeholder is the team expression.
+_PLAYS = "(g.home_team = {0} OR g.away_team = {0})"
+
+
+def resolve_target(target: str | Path | None = None) -> str:
+    """Explicit target, else $DATABASE_URL, else $STARTSIT_DB_PATH, else the default file."""
+    return str(target or os.environ.get("DATABASE_URL") or os.environ.get("STARTSIT_DB_PATH") or DEFAULT_DB_PATH)
+
+
+def is_postgres(target: str) -> bool:
+    return target.startswith(("postgres://", "postgresql://"))
+
+
+class Database:
+    def __init__(self, target: str | Path | None = None):
+        target = resolve_target(target)
+        self.is_postgres = is_postgres(target)
+        self.conn: Any
+        if self.is_postgres:
+            import psycopg
+            from psycopg.rows import dict_row
+
+            self.conn = psycopg.connect(target, row_factory=dict_row)
+            with self.conn.transaction():
+                self.conn.execute(SCHEMA)
+        else:
+            if target != ":memory:":
+                Path(target).parent.mkdir(parents=True, exist_ok=True)
+            self.conn = sqlite3.connect(target)
+            self.conn.row_factory = sqlite3.Row
+            self.conn.executescript(SCHEMA)
+
+    def __enter__(self) -> Database:
+        return self
+
+    def __exit__(
+        self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None
+    ) -> None:
+        self.close()
+
+    def close(self) -> None:
+        self.conn.close()
+
+    # --- generic ---------------------------------------------------------------
+
+    def _sql(self, sql: str) -> str:
+        # Our SQL never contains a literal ? or %, so this translation is safe.
+        return sql.replace("?", "%s") if self.is_postgres else sql
+
+    def query(self, sql: str, params: Sequence[Any] = ()) -> list[dict[str, Any]]:
+        cur = self.conn.execute(self._sql(sql), tuple(params))
+        rows = [dict(r) for r in cur.fetchall()]
+        self.conn.commit()  # end the implicit transaction (Postgres would otherwise hold it open)
+        return rows
+
+    def execute(self, sql: str, params: Sequence[Any] = ()) -> None:
+        self.conn.execute(self._sql(sql), tuple(params))
+        self.conn.commit()
+
+    def _one(self, sql: str, params: Sequence[Any]) -> dict[str, Any] | None:
+        rows = self.query(sql, params)
+        return rows[0] if rows else None
+
+    def _scalar(self, sql: str, params: Sequence[Any] = ()) -> Any:
+        row = self._one(sql, params)
+        return next(iter(row.values())) if row else None
+
+    def upsert(self, table: str, rows: Iterable[Mapping[str, Any]]) -> int:
+        rows = list(rows)
+        if not rows:
+            return 0
+        keys = TABLES[table].key
+        cols = list(rows[0].keys())
+        non_keys = [c for c in cols if c not in keys]
+        action = "DO UPDATE SET " + ", ".join(f"{c} = excluded.{c}" for c in non_keys) if non_keys else "DO NOTHING"
+        sql = self._sql(
+            f"INSERT INTO {table} ({', '.join(cols)}) "
+            f"VALUES ({', '.join('?' for _ in cols)}) "
+            f"ON CONFLICT ({', '.join(keys)}) {action}"
+        )
+        values = [tuple(r[c] for c in cols) for r in rows]
+        if self.is_postgres:
+            with self.conn.transaction(), self.conn.cursor() as cur:
+                cur.executemany(sql, values)
+        else:
+            with self.conn:
+                self.conn.executemany(sql, values)
+        return len(rows)
+
+    def record_run(self, source: str, season: int, max_week: int | None, row_count: int) -> None:
+        self.execute(
+            "INSERT INTO ingest_runs (source, season, max_week, row_count) VALUES (?, ?, ?, ?)",
+            (source, season, max_week, row_count),
+        )
+
+    def recent_runs(self, limit: int) -> list[dict[str, Any]]:
+        return self.query(
+            "SELECT source, season, max_week, row_count, finished_at FROM ingest_runs "
+            "ORDER BY finished_at DESC, source LIMIT ?",
+            (limit,),
+        )
+
+    # --- players ---------------------------------------------------------------
+
+    def player(self, player_id: str) -> PlayerRow | None:
+        return cast("PlayerRow | None", self._one("SELECT * FROM players WHERE player_id = ?", (player_id,)))
+
+    def players_named(self, name: str, team: str | None = None) -> list[PlayerRow]:
+        """Exact (case-insensitive) name matches, else substring matches; optionally on one team."""
+        team_filter, team_params = (" AND upper(team) = upper(?)", (team,)) if team else ("", ())
+        for pattern, op in ((name, "="), (f"%{name}%", "LIKE")):
+            rows = self.query(
+                f"SELECT * FROM players WHERE lower(name) {op} lower(?){team_filter} ORDER BY name, team",
+                (pattern, *team_params),
+            )
+            if rows:
+                return cast("list[PlayerRow]", rows)
+        return []
+
+    def _player_row(
+        self, table: str, player_id: str, season: int, condition: str, value: int, order_by: str | None = None
+    ) -> dict[str, Any] | None:
+        """One row of `table` for the player and season matching `condition` (newest first by `order_by`)."""
+        order = f" ORDER BY {order_by} DESC" if order_by else ""
+        return self._one(
+            f"SELECT * FROM {table} WHERE player_id = ? AND season = ? AND {condition}{order} LIMIT 1",
+            (player_id, season, value),
+        )
+
+    def roster_status(self, player_id: str, season: int, week: int) -> RosterRow | None:
+        """The player's roster entry for `week`, else the latest one before it."""
+        return cast("RosterRow | None", self._player_row("roster_weeks", player_id, season, "week <= ?", week, "week"))
+
+    def injury(self, player_id: str, season: int, week: int) -> InjuryRow | None:
+        return cast("InjuryRow | None", self._player_row("injuries", player_id, season, "week = ?", week))
+
+    def usage_before(self, player_id: str, season: int, week: int) -> UsageRow | None:
+        """Usage features as of the latest week before `week` (no peeking at that week's game)."""
+        return cast(
+            "UsageRow | None",
+            self._player_row("usage_features", player_id, season, "through_week < ?", week, "through_week"),
+        )
+
+    # --- rankings --------------------------------------------------------------
+
+    def latest_ranking(self, player_id: str, season: int, week: int) -> RankingRow | None:
+        return cast(
+            "RankingRow | None", self._player_row("rankings", player_id, season, "week = ?", week, "scrape_date")
+        )
+
+    def latest_rankings_week(self, season: int) -> int | None:
+        return cast("int | None", self._scalar("SELECT max(week) AS w FROM rankings WHERE season = ?", (season,)))
+
+    # --- schedule and stats ------------------------------------------------------
+
+    def latest_season(self) -> int | None:
+        return cast("int | None", self._scalar("SELECT max(season) AS s FROM player_weeks"))
+
+    def latest_played_week(self, season: int) -> int | None:
+        return cast("int | None", self._scalar("SELECT max(week) AS w FROM player_weeks WHERE season = ?", (season,)))
+
+    def week_has_games(self, season: int, week: int) -> bool:
+        return self._one("SELECT 1 AS x FROM games WHERE season = ? AND week = ? LIMIT 1", (season, week)) is not None
+
+    def team_games(self, season: int, team: str, after_week: int, through_week: int) -> int:
+        """Games `team` played (or plays) in weeks after_week+1 .. through_week."""
+        return int(
+            self._scalar(
+                "SELECT count(*) AS n FROM games g WHERE season = ? AND week > ? AND week <= ? "
+                f"AND {_PLAYS.format('?')}",
+                (season, after_week, through_week, team, team),
+            )
+        )
+
+    def missed_games(self, player_id: str, season: int, after_week: int, through_week: int) -> int | None:
+        """Games the player's team (per that week's roster) played in weeks after_week+1 .. through_week.
+
+        None if there are no roster rows for those weeks, so the caller can fall back.
+        """
+        row = self._one(
+            "SELECT count(*) AS weeks, count(g.game_id) AS games FROM roster_weeks r "
+            f"LEFT JOIN games g ON g.season = r.season AND g.week = r.week AND {_PLAYS.format('r.team')} "
+            "WHERE r.player_id = ? AND r.season = ? AND r.week > ? AND r.week <= ?",
+            (player_id, season, after_week, through_week),
+        )
+        if row is None or row["weeks"] == 0:
+            return None
+        return int(row["games"])
