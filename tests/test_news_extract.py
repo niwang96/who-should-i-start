@@ -29,6 +29,7 @@ PLAYERS = [
 
 def item(n, published_at="2026-10-24T10:00:00+00:00", summary="Details."):
     return dict(
+        item_id=f"RotoWire:{n}",
         url=f"https://example.com/{n}",
         source="RotoWire",
         title=f"Headline {n}",
@@ -64,13 +65,15 @@ def test_facts_from_response_attaches_code_owned_fields_and_drops_bad_rows():
             fact("N2", name="Somebody Else"),  # unmatched player
             fact("N2", event="vibes"),  # invalid event
             fact("N2", summary=" "),  # empty summary
+            fact("N2", event="other", severity="low"),  # color, not a playing-time fact
         ]
     }
     facts = facts_from_response(response, items, PlayerMatcher(PLAYERS))
     assert facts == [
         dict(
-            url="https://example.com/1",
+            item_id="RotoWire:1",
             player_id="NACUA",
+            url="https://example.com/1",
             source="RotoWire",
             published_at="2026-10-24T10:00:00+00:00",
             event="injury",
@@ -78,8 +81,9 @@ def test_facts_from_response_attaches_code_owned_fields_and_drops_bad_rows():
             summary="Duplicate for the same player and item: last one wins.",
         ),
         dict(
-            url="https://example.com/2",
+            item_id="RotoWire:2",
             player_id="MILLER_NE",
+            url="https://example.com/2",
             source="RotoWire",
             published_at="2026-10-24T10:00:00+00:00",
             event="transaction",
@@ -112,9 +116,9 @@ def test_extract_news_caches_by_url_and_never_resends(news_db):
     result = extract_news(news_db, budgeted(news_db, provider), NOW)
     assert (result.items_processed, result.facts, result.calls, result.stopped_early) == (2, 1, 1, None)
     assert "Headline 3" not in provider.prompts[0]  # older than the lookback window
-    assert news_db.query("select url, fact_count from news_extractions order by url") == [
-        {"url": "https://example.com/1", "fact_count": 1},
-        {"url": "https://example.com/2", "fact_count": 0},
+    assert news_db.query("select item_id, fact_count from news_extractions order by item_id") == [
+        {"item_id": "RotoWire:1", "fact_count": 1},
+        {"item_id": "RotoWire:2", "fact_count": 0},
     ]
     # A second run has nothing new to send.
     again = extract_news(news_db, budgeted(news_db, provider), NOW)

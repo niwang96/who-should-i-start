@@ -6,8 +6,9 @@ on:
     # full-season refresh picks up each update within a day. It also archives that day's
     # FantasyPros weekly rankings scrape and runs the news step.
     - cron: "17 10 * * *"
-    # News only, every 3 hours: headlines go stale fast. Each run makes ~1-2 LLM calls.
-    - cron: "47 */3 * * *"
+    # News only, hourly: headlines go stale fast, and RotoWire's feed only lists its latest 5.
+    # Each run makes ~1 LLM call (40 headlines per call), within the 40/day news budget.
+    - cron: "47 * * * *"
   workflow_dispatch:
     inputs:
       only:
@@ -42,7 +43,7 @@ jobs:
       - name: Ingest
         env:
           SEASON: ${{ inputs.season }}
-          ONLY: ${{ github.event.schedule == '47 */3 * * *' && 'news' || inputs.only }}
+          ONLY: ${{ github.event.schedule == '47 * * * *' && 'news' || inputs.only }}
         run: |
           [ "$ONLY" = all ] && ONLY=""
           python -m startsit.ingest ${ONLY:+--only "$ONLY"} ${SEASON:+--season "$SEASON"}

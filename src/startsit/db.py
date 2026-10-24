@@ -140,6 +140,7 @@ def utc_iso(dt: datetime) -> str:
 class NewsItemRow(TypedDict):
     """One headline from an RSS feed: headline, summary and link only (CLAUDE.md: link out, don't copy articles)."""
 
+    item_id: str  # "<source>:<feed guid>", else the link (some feeds reuse one link per player)
     url: str
     source: str
     title: str
@@ -151,7 +152,7 @@ class NewsItemRow(TypedDict):
 class NewsExtractionRow(TypedDict):
     """The L2 cache: one row per news item the LLM has processed, so no item is sent twice."""
 
-    url: str
+    item_id: str
     model: str
     extracted_at: str
     fact_count: int
@@ -160,8 +161,9 @@ class NewsExtractionRow(TypedDict):
 class NewsFactRow(TypedDict):
     """A structured, player-level fact extracted from one news item."""
 
-    url: str
+    item_id: str
     player_id: str
+    url: str  # the item's link, for citing the source
     source: str
     published_at: str
     event: str  # see startsit.ingest.news_extract.EVENTS
@@ -216,9 +218,9 @@ TABLES: dict[str, Table] = {
         Table("usage_features", UsageRow, ("player_id", "season", "through_week")),
         Table("games", GameRow, ("game_id",)),
         Table("rankings", RankingRow, ("season", "week", "scrape_date", "fantasypros_id")),
-        Table("news_items", NewsItemRow, ("url",)),
-        Table("news_extractions", NewsExtractionRow, ("url",)),
-        Table("news_facts", NewsFactRow, ("url", "player_id")),
+        Table("news_items", NewsItemRow, ("item_id",)),
+        Table("news_extractions", NewsExtractionRow, ("item_id",)),
+        Table("news_facts", NewsFactRow, ("item_id", "player_id")),
     )
 }
 
@@ -360,8 +362,8 @@ class Database:
         return cast(
             "list[NewsItemRow]",
             self.query(
-                "SELECT i.* FROM news_items i LEFT JOIN news_extractions e ON e.url = i.url "
-                "WHERE e.url IS NULL AND i.published_at >= ? ORDER BY i.published_at DESC LIMIT ?",
+                "SELECT i.* FROM news_items i LEFT JOIN news_extractions e ON e.item_id = i.item_id "
+                "WHERE e.item_id IS NULL AND i.published_at >= ? ORDER BY i.published_at DESC LIMIT ?",
                 (since, limit),
             ),
         )

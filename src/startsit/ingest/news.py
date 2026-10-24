@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from xml.etree.ElementTree import Element
+from zoneinfo import ZoneInfo
 
 from defusedxml.ElementTree import fromstring
 
@@ -33,12 +34,25 @@ class Feed:
     url: str
 
 
+# Verified Oct 24 2026 from the Claude Code env. RotoWire's public feed only ever lists its
+# latest 5 player blurbs (no paging or filters), so frequent polling matters most for it.
 FEEDS = [
     Feed("RotoWire", "https://www.rotowire.com/rss/news.php?sport=NFL"),
-    Feed("ProFootballTalk", "https://profootballtalk.nbcsports.com/feed/"),
+    Feed("ProFootballTalk", "https://www.nbcsports.com/profootballtalk.rss"),
     Feed("ESPN", "https://www.espn.com/espn/rss/nfl/news"),
     Feed("CBS Sports", "https://www.cbssports.com/rss/headlines/nfl/"),
 ]
+
+# US zone abbreviations, read as local time in that region: ESPN labels times "EST" even
+# during daylight time, so the S/D letter can't be trusted.
+US_ZONES = {
+    **dict.fromkeys(("EST", "EDT", "ET"), "America/New_York"),
+    **dict.fromkeys(("CST", "CDT", "CT"), "America/Chicago"),
+    **dict.fromkeys(("MST", "MDT", "MT"), "America/Denver"),
+    **dict.fromkeys(("PST", "PDT", "PT"), "America/Los_Angeles"),
+}
+# "Sat, 24 Oct 2026 16:26:40 EST" or RotoWire's 12-hour "Sat, 24 Oct 2026 1:47:00 PM PDT".
+_US_LOCAL = re.compile(r"^(?:\w{3}, )?(\d{1,2} \w{3} \d{4} \d{1,2}:\d{2}:\d{2})( [AP]M)? ([A-Z]{2,3})$")
 
 
 def fetch(feed: Feed, timeout: float = 30) -> bytes:
@@ -69,10 +83,16 @@ def clean_text(raw: str | None, max_chars: int | None = None) -> str:
 
 
 def parse_date(raw: str | None) -> datetime | None:
-    """RFC 822 (RSS) or ISO 8601 (Atom) dates, as UTC."""
+    """RFC 822 (RSS), US-local ("... 1:47:00 PM PDT", "... 16:26:40 EST") or ISO 8601 (Atom) dates, as UTC."""
     if not raw:
         return None
     raw = raw.strip()
+    # Checked first: email.utils misreads "1:47:00 PM PDT" as 01:47 UTC and takes "EST" literally.
+    m = _US_LOCAL.match(raw)
+    if m and m[3] in US_ZONES:
+        fmt = "%d %b %Y %I:%M:%S %p" if m[2] else "%d %b %Y %H:%M:%S"
+        local = datetime.strptime(m[1] + (m[2] or ""), fmt)
+        return local.replace(tzinfo=ZoneInfo(US_ZONES[m[3]])).astimezone(UTC)
     try:
         parsed = parsedate_to_datetime(raw)
     except (TypeError, ValueError):
@@ -88,33 +108,55 @@ def _text(el: Element, tag: str) -> str | None:
     return child.text if child is not None else None
 
 
-def _entries(root: Element) -> Iterable[tuple[str | None, str | None, str | None, str | None]]:
-    """(title, link, summary, date) for each RSS item or Atom entry."""
+@dataclass(frozen=True)
+class _Entry:
+    guid: str | None
+    title: str | None
+    link: str | None
+    summary: str | None
+    date: str | None
+
+
+def _entries(root: Element) -> Iterable[_Entry]:
+    """Each RSS item or Atom entry, with its fields as raw text."""
     for item in root.iter("item"):
-        yield _text(item, "title"), _text(item, "link"), _text(item, "description"), _text(item, "pubDate")
+        yield _Entry(
+            _text(item, "guid"),
+            _text(item, "title"),
+            _text(item, "link"),
+            _text(item, "description"),
+            _text(item, "pubDate"),
+        )
     for entry in root.iter(f"{ATOM}entry"):
         link_el = entry.find(f"{ATOM}link")
-        link = link_el.get("href") if link_el is not None else None
-        summary = _text(entry, f"{ATOM}summary") or _text(entry, f"{ATOM}content")
-        date = _text(entry, f"{ATOM}published") or _text(entry, f"{ATOM}updated")
-        yield _text(entry, f"{ATOM}title"), link, summary, date
+        yield _Entry(
+            _text(entry, f"{ATOM}id"),
+            _text(entry, f"{ATOM}title"),
+            link_el.get("href") if link_el is not None else None,
+            _text(entry, f"{ATOM}summary") or _text(entry, f"{ATOM}content"),
+            _text(entry, f"{ATOM}published") or _text(entry, f"{ATOM}updated"),
+        )
 
 
 def parse_feed(feed: Feed, body: bytes, fetched_at: datetime) -> list[NewsItemRow]:
     """News items from one feed body; items without a link, title or parseable date are dropped."""
     root = fromstring(body)
     fetched = utc_iso(fetched_at)
-    items: dict[str, NewsItemRow] = {}
-    for title, link, summary, date in _entries(root):
-        published = parse_date(date)
-        if not (link and title and published):
+    items: dict[str, NewsItemRow] = {}  # by item_id; a repeated id keeps the last copy
+    for e in _entries(root):
+        published = parse_date(e.date)
+        if not (e.link and e.title and published):
             continue
-        url = link.strip()
-        items[url] = NewsItemRow(
+        published = min(published, fetched_at.astimezone(UTC))  # a feed's clock can't be ahead of ours
+        url = e.link.strip()
+        guid = (e.guid or "").strip()
+        item_id = f"{feed.source}:{guid}" if guid else url
+        items[item_id] = NewsItemRow(
+            item_id=item_id,
             url=url,
             source=feed.source,
-            title=clean_text(title),
-            summary=clean_text(summary, SUMMARY_MAX_CHARS) or None,
+            title=clean_text(e.title),
+            summary=clean_text(e.summary, SUMMARY_MAX_CHARS) or None,
             published_at=utc_iso(published),
             fetched_at=fetched,
         )

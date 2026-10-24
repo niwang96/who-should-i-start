@@ -247,8 +247,9 @@ def test_parse_player_arg(arg, expected):
 
 def news_fact(player_id, published_at, summary, url_suffix, event="injury", severity="medium"):
     return dict(
-        url=f"https://example.com/news/{url_suffix}",
+        item_id=f"RotoWire:{url_suffix}",
         player_id=player_id,
+        url=f"https://example.com/news/{url_suffix}",
         source="RotoWire",
         published_at=published_at,
         event=event,

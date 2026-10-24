@@ -87,7 +87,7 @@ Many users will ask about the same players, so cache per-player results.
 ## Build order
 1. Skeleton + nflverse ingest + usage features + Actions cron
 2. ~~Baseline score + evidence packet~~ (done Oct 24 2026): FF Rankings as the consensus; baseline is 100% consensus for now (decided: add usage weighting only if the evaluation shows it helps; FantasyPros API add-on deferred)
-3. RSS news + cached LLM extraction (L2 cache keyed by URL): **built Oct 24 2026, feeds unverified.** `startsit/llm.py` (Gemini REST provider, fake provider, `BudgetedLLM` with per-purpose daily budgets logged in `llm_calls`), `startsit/ingest/news.py` (RSS/Atom parsing via defusedxml), `startsit/ingest/news_extract.py` (batched extraction, name matching, `news_extractions` cache), and `news` items in the evidence packet (last 7 days, up to 3 per player). News budget: 40 calls/day. Runs every 3 hours in `ingest.yml`.
+3. ~~RSS news + cached LLM extraction~~ (built Oct 24 2026): `startsit/llm.py` (Gemini REST provider, fake provider, `BudgetedLLM` with per-purpose daily budgets logged in `llm_calls`), `startsit/ingest/news.py` (RSS/Atom via defusedxml), `startsit/ingest/news_extract.py` (batches of 40, name matching, cache in `news_extractions` keyed by item id = feed guid, else link), and `news` items in the evidence packet (last 7 days, up to 3 per player, cut off at the question's `as_of`). News budget 40 calls/day; runs hourly in `ingest.yml`.
 4. Stage 3 decide call with structured output, validated against packet evidence IDs
 5. Web UI + recommendation logging
 6. Weekly evaluation, then Reddit as an optional signal
@@ -104,7 +104,12 @@ Many users will ask about the same players, so cache per-player results.
   - `GET /compare-players?players=<id>:<id>[:<id>]&position=WR|RB|...` (no season in the path; colon-delimited IDs): returns, for each scoring format (STD/PPR/HALF), **every expert's individual rank for each player**. This is the data behind FantasyPros' "Who Should I Start" tool, so code can compute "X of N experts start A over B". `position=ALL` returns empty lists. With PPR/HALF/STD, a non-top-10 player and a mixed-position pair still untested (hit the quota first).
   - Implication: nflverse FF Rankings stays the primary consensus source. Use FantasyPros per-player projections (and top-10 ECR/start-sit grade when available) as a supplementary, cited signal.
 - [x] Verify `GEMINI_API_KEY` works from the Claude Code cloud env (Oct 24 2026: `gemini-3.5-flash` OK; `gemini-2.5-flash` returns 404 "no longer available to new users")
-- [ ] Verify RSS feed URLs (candidates in `startsit/ingest/news.py:FEEDS`). Oct 24 2026: all feed hosts are blocked by the Claude Code env's network policy; allowlist `www.rotowire.com`, `profootballtalk.nbcsports.com`, `www.espn.com`, `www.cbssports.com`, `www.fantasypros.com`, then also check they're reachable from GitHub Actions (datacenter IPs).
+- [x] RSS feeds verified Oct 24 2026 (Claude Code env, after allowlisting): RotoWire, ESPN and CBS Sports work. Findings:
+  - **RotoWire's public feed only ever lists its latest 5 blurbs** (no paging or filters), and links every item to the player's page, so items are keyed by `<guid>`, not URL. Polling is hourly to catch more of it; busy Sundays will still miss some.
+  - RotoWire writes 12-hour local times ("1:47:00 PM PDT"), which `email.utils` misreads; ESPN labels times "EST" even during daylight time. US zone abbreviations are therefore read as local time in that region, and published times are capped at fetch time.
+  - ProFootballTalk moved to `https://www.nbcsports.com/profootballtalk.rss` (needs `www.nbcsports.com` allowlisted here; unverified). FantasyPros has no working public RSS URL (404s); its news is in the API.
+  - Still to check: all feeds from GitHub Actions (datacenter IPs).
+- Extraction quality (Oct 24 2026, 66 live headlines, 2 calls): after tightening the prompt to skip opinions, predictions and picks (plus a code filter for `other`/`low` facts), 23 facts, all real availability/role news; all names matched. The first prompt produced ~40% noise (picks, quotes).
 - [ ] Add `GEMINI_API_KEY` as a GitHub Actions repository secret (news extraction is skipped without it).
 - [ ] Test Reddit `.json` access from the deployed environment
 - [x] FF Opportunity: 2026 data through the latest week; expected points are PPR-scored (derive half/std via `receptions_exp`)

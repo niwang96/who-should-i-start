@@ -1,5 +1,7 @@
 from datetime import UTC, datetime
 
+import pytest
+
 from startsit.ingest import news
 
 FETCHED = datetime(2026, 10, 24, 20, 0, tzinfo=UTC)
@@ -57,6 +59,7 @@ def test_parse_rss_strips_html_and_converts_timezones():
 def test_parse_atom():
     [item] = news.parse_feed(news.Feed("PFT", "https://example.com/atom"), ATOM, FETCHED)
     assert item == {
+        "item_id": "https://example.com/pft/9",  # no id in the entry: the link
         "url": "https://example.com/pft/9",
         "source": "PFT",
         "title": "Breece Hall returns to practice",
@@ -84,3 +87,48 @@ def test_entity_expansion_is_refused():
         b"<rss><channel><item><title>&a;</title></item></channel></rss>"
     )
     assert news.build_news_items({FEED: bomb}, FETCHED) == []
+
+
+ROTOWIRE = b"""<rss version="2.0"><channel>
+<item><guid>nfl644147</guid><title>Christian Kirk: Activated from injured reserve</title>
+  <link>https://www.rotowire.com/football/player/christian-kirk-12508</link>
+  <pubDate>Sat, 24 Oct 2026 1:47:00 PM PDT</pubDate></item>
+<item><guid>nfl644001</guid><title>Christian Kirk: Questionable for Sunday</title>
+  <link>https://www.rotowire.com/football/player/christian-kirk-12508</link>
+  <pubDate>Fri, 23 Oct 2026 11:05:00 AM PDT</pubDate></item>
+</channel></rss>"""
+
+
+def test_rotowire_items_sharing_a_player_link_are_kept_apart_by_guid():
+    later = datetime(2026, 10, 24, 23, 0, tzinfo=UTC)
+    items = news.parse_feed(news.Feed("RotoWire", "https://www.rotowire.com/rss"), ROTOWIRE, later)
+    assert [(i["item_id"], i["published_at"]) for i in items] == [
+        ("RotoWire:nfl644147", "2026-10-24T20:47:00+00:00"),
+        ("RotoWire:nfl644001", "2026-10-23T18:05:00+00:00"),
+    ]
+    assert {i["url"] for i in items} == {"https://www.rotowire.com/football/player/christian-kirk-12508"}
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("Sat, 24 Oct 2026 1:47:00 PM PDT", "2026-10-24T20:47:00+00:00"),
+        ("Sat, 24 Oct 2026 12:05:00 AM EDT", "2026-10-24T04:05:00+00:00"),
+        ("Sat, 24 Oct 2026 16:26:40 EST", "2026-10-24T20:26:40+00:00"),  # ESPN's "EST" in daylight time
+        ("Sat, 05 Dec 2026 16:26:40 EST", "2026-12-05T21:26:40+00:00"),
+        ("Sat, 24 Oct 2026 20:19:56 +0000", "2026-10-24T20:19:56+00:00"),
+        ("2026-10-22T15:00:00Z", "2026-10-22T15:00:00+00:00"),
+    ],
+)
+def test_parse_date_formats(raw, expected):
+    assert news.parse_date(raw).isoformat() == expected
+
+
+def test_parse_date_rejects_garbage():
+    assert news.parse_date("next Tuesday") is None and news.parse_date(None) is None
+
+
+def test_published_time_is_capped_at_fetch_time():
+    future = RSS.replace(b"Sat, 24 Oct 2026 10:00:00 GMT", b"Sun, 25 Oct 2026 10:00:00 GMT")
+    [item] = news.parse_feed(FEED, future, FETCHED)
+    assert item["published_at"] == "2026-10-24T20:00:00+00:00"

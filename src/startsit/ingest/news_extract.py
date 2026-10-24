@@ -8,7 +8,8 @@ Division of labor, so the LLM never invents facts:
   player is matched to our players table by name (and team, when names collide).
   Names it can't match are dropped.
 
-Every processed item gets a `news_extractions` row (the permanent L2 cache keyed by URL),
+Every processed item gets a `news_extractions` row (the permanent L2 cache, keyed by the
+item's id: the feed's guid, else its URL),
 even when it yields no facts, so no item is ever sent twice.
 """
 
@@ -36,16 +37,19 @@ MAX_ITEMS_PER_RUN = 400
 SYSTEM_PROMPT = """You extract fantasy-football facts from NFL news items.
 Rules:
 - Use only the text of each item. Never add outside knowledge.
-- Only include QB, RB, WR or TE players named in the item, and only when the item says something
-  about their availability, health, role or performance. Skip team-level news, coaches, defenders,
-  kickers and items with no fantasy relevance; an item may produce no facts.
+- Only include QB, RB, WR or TE players named in the item, and only when the item reports a fact
+  about their availability, health, role or a game already played. An item may produce no facts.
+- Skip: opinions, quotes, predictions, betting or fantasy picks ("smash spot", "TD scorer picks",
+  "expected to bounce back"), game previews and matchup hype, off-field news with no effect on
+  playing, and team-level news, coaches, defenders and kickers.
 - One fact per player per item. Use the player's full name as written and their team abbreviation
   if the item gives it (else an empty string).
 - event: injury (hurt, status questionable/doubtful/out), practice (practice participation),
-  return (cleared, activated, back from injury), role_change (depth chart, starting, snaps, usage),
-  transaction (signed, released, traded, claimed), suspension, performance (notable game), other.
+  return (cleared, activated, back from injury), role_change (named starter, benched, depth chart,
+  snap or target share change), transaction (signed, released, traded, claimed), suspension,
+  performance (a notable result in a game already played), other (any other playing-time fact).
 - severity: impact on the player's fantasy value this week. high = likely to miss the game or a
-  major role change; medium = uncertain status or meaningful change; low = minor or informational.
+  major role change; medium = uncertain status or meaningful change; low = minor.
 - summary: at most 25 words, restating only what the item says."""
 
 RESPONSE_SCHEMA: dict[str, Any] = {
@@ -116,20 +120,23 @@ def build_prompt(items: Sequence[NewsItemRow]) -> str:
 def facts_from_response(response: Any, items: Sequence[NewsItemRow], matcher: PlayerMatcher) -> list[NewsFactRow]:
     """Validate the LLM output against the chunk and attach code-owned fields (URL, date, player id)."""
     by_id = {f"N{i}": item for i, item in enumerate(items, 1)}
-    facts: dict[tuple[str, str], NewsFactRow] = {}
+    facts: dict[tuple[str, str], NewsFactRow] = {}  # by (item_id, player_id)
     for raw in (response or {}).get("facts", []):
         item = by_id.get(str(raw.get("item_id", "")))
         event, severity = raw.get("event"), raw.get("severity")
         summary = str(raw.get("summary", "")).strip()
         if item is None or event not in EVENTS or severity not in SEVERITIES or not summary:
             continue
+        if (event, severity) == ("other", "low"):
+            continue  # quotes and color the model keeps despite the prompt; never about playing time
         player_id = matcher.match(str(raw.get("player", "")), str(raw.get("team", "")))
         if player_id is None:
-            log.info("news fact for unmatched player %r (%s) skipped", raw.get("player"), item["url"])
+            log.info("news fact for unmatched player %r (%s) skipped", raw.get("player"), item["item_id"])
             continue
-        facts[(item["url"], player_id)] = NewsFactRow(
-            url=item["url"],
+        facts[(item["item_id"], player_id)] = NewsFactRow(
+            item_id=item["item_id"],
             player_id=player_id,
+            url=item["url"],
             source=item["source"],
             published_at=item["published_at"],
             event=event,
@@ -158,18 +165,18 @@ def extract_news(db: Database, llm: BudgetedLLM, now: datetime | None = None) ->
             stopped = str(e)  # leave this chunk unextracted; the next run retries it
             break
         facts = facts_from_response(response, chunk, matcher)
-        per_url: dict[str, int] = defaultdict(int)
+        per_item: dict[str, int] = defaultdict(int)
         for f in facts:
-            per_url[f["url"]] += 1
+            per_item[f["item_id"]] += 1
         db.upsert("news_facts", facts)
         db.upsert(
             "news_extractions",
             [
                 NewsExtractionRow(
-                    url=i["url"],
+                    item_id=i["item_id"],
                     model=llm.provider.model,
                     extracted_at=utc_iso(now),
-                    fact_count=per_url[i["url"]],
+                    fact_count=per_item[i["item_id"]],
                 )
                 for i in chunk
             ],

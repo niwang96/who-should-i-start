@@ -60,9 +60,9 @@ Feeds (`startsit/ingest/news.py`) are stored as headline + summary + link only. 
 processed are sent to Gemini in batches of ~40 (`startsit/ingest/news_extract.py`); the model
 returns, per player, an event type, a severity and a short restatement, and code attaches the
 URL, date and player id (names it can't match to a player are dropped). Every processed URL is
-cached in `news_extractions`, so no item is sent twice. News uses at most 40 LLM calls a day
-(`llm_calls` logs every call). GitHub Actions runs the news step every 3 hours and the full
-ingest daily.
+cached in `news_extractions` (keyed by the feed's guid, else the link), so no item is sent twice. News uses at most 40 LLM calls a day
+(`llm_calls` logs every call). GitHub Actions runs the news step hourly and the full ingest
+daily.
 
 Tables: `news_items`, `news_extractions` (the per-URL LLM cache), `news_facts`, `llm_calls`.
 
