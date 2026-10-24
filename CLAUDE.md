@@ -75,7 +75,7 @@ Many users will ask about the same players, so cache per-player results.
 - **Language:** Python everywhere (author is primarily a Java dev; Python chosen for the nflverse/LLM ecosystem and resume range).
 - **Ingest:** Python jobs (`nflreadpy`) run by GitHub Actions cron, writing to Supabase.
 - **Web app:** FastAPI on Vercel's free Python functions; simple HTMX/Jinja frontend (no JS framework for MVP).
-- **DB:** Supabase (Postgres) via `DATABASE_URL` (session pooler URI; the direct connection is IPv6-only, which Actions/Vercel can't reach). Local SQLite when unset. All SQL lives in `startsit/db.py` and is written once for both backends; tests run on both.
+- **DB:** Supabase (Postgres) via `DATABASE_URL` (session pooler URI; the direct connection is IPv6-only, which Actions/Vercel can't reach; the Claude Code cloud env can't reach Postgres at all). Local SQLite when unset. All SQL lives in `startsit/db.py` and is written once for both backends; tests run on both.
 - **Code quality:** ruff (lint + format) and mypy run in CI alongside pytest.
 - **LLM:** Gemini free tier, behind a provider interface so the model can be swapped. Unit tests use a fake provider and never call a real LLM.
 
@@ -119,7 +119,7 @@ Many users will ask about the same players, so cache per-player results.
 - Decided Oct 24 2026: the baseline zeroes every player whose weekly roster status isn't Active (reserve/IR, practice squad, exempt, inactive, released, retired), not just cut/retired. nflverse can lag an activation by a day or two; the packet's roster-status item shows the LLM why.
 - Decided Oct 24 2026: the "current week" is the latest week with rankings, so after Monday night the app keeps answering for the finished week until the new week's rankings arrive (normally Tuesday). Step 5's UI should say which week it's answering for.
 - [ ] Step 5: store the full evidence packet (text + item ids) with each logged recommendation. Injury reports and roster status are overwritten as they update, so the packet is the only record of what the user and LLM saw.
-- [ ] Confirm the Supabase connection from the cloud env: it has no direct TCP/DNS egress (Oct 24 2026), so allowlist the pooler host and check whether the proxy passes Postgres; otherwise verify via an Actions run.
+- [ ] Confirm the Supabase connection via a manual run of the ingest workflow (needs `ingest.yml` on `main`). The Claude Code cloud env **can't** reach Postgres (Oct 24 2026): its proxy carries only HTTP/HTTPS, and raw-TCP databases are unsupported, so allowlisting doesn't help. Development and tests there use SQLite and a local Postgres; Supabase is reached only from GitHub Actions, Vercel, or a laptop. `DATABASE_URL` must percent-encode special characters in the password (e.g. `#` → `%23`), or the value gets cut off when saved.
 
 ## Timing
 The NFL regular season runs through early January. Shipping an MVP within ~2–3 weeks leaves time to collect real usage and several weeks of evaluation data.
