@@ -17,15 +17,19 @@ import argparse
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from typing import Literal, NamedTuple, cast
 
 from startsit import baseline
-from startsit.db import Database, InjuryRow, PlayerRow, RankingRow, RosterRow, UsageRow
+from startsit.db import Database, InjuryRow, NewsFactRow, PlayerRow, RankingRow, RosterRow, UsageRow, utc_iso
 from startsit.scoring import LABELS, SCORINGS, Scoring, column, reception_discount
 
 NFLVERSE_URL = "https://github.com/nflverse/nflverse-data"
 
-EvidenceKind = Literal["availability", "consensus", "projection", "usage", "injury"]
+EvidenceKind = Literal["availability", "consensus", "projection", "usage", "injury", "news"]
+
+NEWS_LOOKBACK = timedelta(days=7)
+NEWS_PER_PLAYER = 3
 
 
 @dataclass(frozen=True)
@@ -33,6 +37,7 @@ class Question:
     season: int
     week: int
     scoring: Scoring
+    as_of: datetime = field(default_factory=lambda: datetime.now(UTC))  # news cutoff: nothing after this
 
     @property
     def label(self) -> str:
@@ -49,6 +54,7 @@ class PlayerContext:
     ranking: RankingRow | None
     usage: UsageRow | None
     injury: InjuryRow | None
+    news: list[NewsFactRow]  # newest first
     on_bye: bool
     missed_games: int  # games the player's team played since the player last played (0 if unknown)
 
@@ -171,6 +177,7 @@ def load_context(db: Database, player_id: str, q: Question) -> PlayerContext:
         ranking=db.latest_ranking(player_id, q.season, q.week),
         usage=usage,
         injury=db.injury(player_id, q.season, q.week),
+        news=db.news_for_player(player_id, utc_iso(q.as_of - NEWS_LOOKBACK), utc_iso(q.as_of), NEWS_PER_PLAYER),
         on_bye=on_bye,
         missed_games=missed,
     )
@@ -293,24 +300,44 @@ def injury_facts(ctx: PlayerContext, q: Question) -> list[Fact]:
     ]
 
 
-# Order here is the order facts appear in the packet. Add new signals (news, Reddit) here.
+def news_facts(ctx: PlayerContext, q: Question) -> list[Fact]:
+    return [
+        Fact(
+            "news",
+            f"{n['published_at'][:10]} {n['source']}: {n['summary']} ({n['event']}, {n['severity']} impact)",
+            n["url"],
+        )
+        for n in ctx.news
+    ]
+
+
+# Order here is the order facts appear in the packet. Add new signals (e.g. Reddit) here.
 ITEM_BUILDERS: tuple[Callable[[PlayerContext, Question], list[Fact]], ...] = (
     availability_facts,
     consensus_facts,
     usage_facts,
     injury_facts,
+    news_facts,
 )
 
 
 # --- 3. assemble ----------------------------------------------------------------------
 
 
-def build_packet(db: Database, player_ids: list[str], scoring: Scoring, season: int, week: int) -> EvidencePacket:
+def build_packet(
+    db: Database,
+    player_ids: list[str],
+    scoring: Scoring,
+    season: int,
+    week: int,
+    as_of: datetime | None = None,
+) -> EvidencePacket:
+    """The packet for a question; `as_of` (default now) cuts off news, so past packets can be rebuilt."""
     if scoring not in SCORINGS:
         raise ValueError(f"scoring must be one of {SCORINGS}")
     if len(set(player_ids)) < 2 or len(set(player_ids)) != len(player_ids):
         raise ValueError("need at least two different players")
-    q = Question(season, week, scoring)
+    q = Question(season, week, scoring, as_of) if as_of else Question(season, week, scoring)
 
     players: list[PlayerEvidence] = []
     n = 0

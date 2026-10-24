@@ -2,15 +2,25 @@ name: ingest
 
 on:
   schedule:
-    # Daily; nflverse publishes stats/snaps in batches after games, so a daily
-    # full-season refresh picks up each update within a day. Each run also archives
-    # that day's FantasyPros weekly rankings scrape.
+    # Daily full run: nflverse publishes stats/snaps in batches after games, so a daily
+    # full-season refresh picks up each update within a day. It also archives that day's
+    # FantasyPros weekly rankings scrape and runs the news step.
     - cron: "17 10 * * *"
+    # News only, every 3 hours: headlines go stale fast. Each run makes ~1-2 LLM calls.
+    - cron: "47 */3 * * *"
   workflow_dispatch:
     inputs:
+      only:
+        description: "Which part to run"
+        type: choice
+        options: [all, stats, news]
+        default: all
       season:
         description: "Season to ingest (default: current)"
         required: false
+
+# Never run two ingests at once against the same database.
+concurrency: ingest
 
 jobs:
   ingest:
@@ -19,6 +29,8 @@ jobs:
     env:
       # Supabase when the secret is set; otherwise a fresh SQLite file uploaded as an artifact.
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      # Without it, news items are stored but not extracted.
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       STARTSIT_DB_PATH: data/startsit.db
     steps:
       - uses: actions/checkout@v5
@@ -27,10 +39,13 @@ jobs:
           python-version: "3.13"
           cache: pip
       - run: pip install -e .
-      - name: Ingest nflverse + rankings
+      - name: Ingest
         env:
           SEASON: ${{ inputs.season }}
-        run: python -m startsit.ingest ${SEASON:+--season "$SEASON"}
+          ONLY: ${{ github.event.schedule == '47 */3 * * *' && 'news' || inputs.only }}
+        run: |
+          [ "$ONLY" = all ] && ONLY=""
+          python -m startsit.ingest ${ONLY:+--only "$ONLY"} ${SEASON:+--season "$SEASON"}
       - name: Summarize
         run: |
           python - >> "$GITHUB_STEP_SUMMARY" <<'PY'
@@ -38,7 +53,7 @@ jobs:
           with Database() as db:
               print(f"Database: {'Postgres' if db.is_postgres else 'SQLite'}\n")
               print("| source | season | max week | rows |\n|---|---|---|---|")
-              for r in db.recent_runs(7):
+              for r in db.recent_runs(12):
                   print(f"| {r['source']} | {r['season']} | {r['max_week']} | {r['row_count']} |")
           PY
       # Without Supabase, keep the SQLite file as an artifact. Each run is a full-season

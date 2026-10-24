@@ -52,6 +52,20 @@ Tables (QB/RB/WR/TE, regular season only):
 Expected points come from nflverse FF Opportunity, which is PPR-scored; half/standard are
 derived by subtracting 0.5 / 1.0 × expected receptions.
 
+## News (Stage 1, text)
+```bash
+python -m startsit.ingest --only news   # fetch RSS, extract player facts with Gemini
+```
+Feeds (`startsit/ingest/news.py`) are stored as headline + summary + link only. Items not yet
+processed are sent to Gemini in batches of ~40 (`startsit/ingest/news_extract.py`); the model
+returns, per player, an event type, a severity and a short restatement, and code attaches the
+URL, date and player id (names it can't match to a player are dropped). Every processed URL is
+cached in `news_extractions`, so no item is sent twice. News uses at most 40 LLM calls a day
+(`llm_calls` logs every call). GitHub Actions runs the news step every 3 hours and the full
+ingest daily.
+
+Tables: `news_items`, `news_extractions` (the per-URL LLM cache), `news_facts`, `llm_calls`.
+
 ## Baseline and evidence packet (Stage 2)
 ```bash
 python -m startsit.evidence "DeVonta Smith" "Puka Nacua" --scoring half

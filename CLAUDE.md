@@ -87,7 +87,7 @@ Many users will ask about the same players, so cache per-player results.
 ## Build order
 1. Skeleton + nflverse ingest + usage features + Actions cron
 2. ~~Baseline score + evidence packet~~ (done Oct 24 2026): FF Rankings as the consensus; baseline is 100% consensus for now (decided: add usage weighting only if the evaluation shows it helps; FantasyPros API add-on deferred)
-3. RSS news + cached LLM extraction (L2 cache keyed by URL)
+3. RSS news + cached LLM extraction (L2 cache keyed by URL): **built Oct 24 2026, feeds unverified.** `startsit/llm.py` (Gemini REST provider, fake provider, `BudgetedLLM` with per-purpose daily budgets logged in `llm_calls`), `startsit/ingest/news.py` (RSS/Atom parsing via defusedxml), `startsit/ingest/news_extract.py` (batched extraction, name matching, `news_extractions` cache), and `news` items in the evidence packet (last 7 days, up to 3 per player). News budget: 40 calls/day. Runs every 3 hours in `ingest.yml`.
 4. Stage 3 decide call with structured output, validated against packet evidence IDs
 5. Web UI + recommendation logging
 6. Weekly evaluation, then Reddit as an optional signal
@@ -104,7 +104,8 @@ Many users will ask about the same players, so cache per-player results.
   - `GET /compare-players?players=<id>:<id>[:<id>]&position=WR|RB|...` (no season in the path; colon-delimited IDs): returns, for each scoring format (STD/PPR/HALF), **every expert's individual rank for each player**. This is the data behind FantasyPros' "Who Should I Start" tool, so code can compute "X of N experts start A over B". `position=ALL` returns empty lists. With PPR/HALF/STD, a non-top-10 player and a mixed-position pair still untested (hit the quota first).
   - Implication: nflverse FF Rankings stays the primary consensus source. Use FantasyPros per-player projections (and top-10 ECR/start-sit grade when available) as a supplementary, cited signal.
 - [x] Verify `GEMINI_API_KEY` works from the Claude Code cloud env (Oct 24 2026: `gemini-3.5-flash` OK; `gemini-2.5-flash` returns 404 "no longer available to new users")
-- [ ] Verify RSS feed URLs
+- [ ] Verify RSS feed URLs (candidates in `startsit/ingest/news.py:FEEDS`). Oct 24 2026: all feed hosts are blocked by the Claude Code env's network policy; allowlist `www.rotowire.com`, `profootballtalk.nbcsports.com`, `www.espn.com`, `www.cbssports.com`, `www.fantasypros.com`, then also check they're reachable from GitHub Actions (datacenter IPs).
+- [ ] Add `GEMINI_API_KEY` as a GitHub Actions repository secret (news extraction is skipped without it).
 - [ ] Test Reddit `.json` access from the deployed environment
 - [x] FF Opportunity: 2026 data through the latest week; expected points are PPR-scored (derive half/std via `receptions_exp`)
 - [x] FF Rankings weekly (`fp_latest_weekly.csv`, Oct 24 2026): `load_ff_rankings('week')` 403s here because the proxy blocks `github.com/.../raw/...`, but the same file loads from `https://raw.githubusercontent.com/dynastyprocess/data/master/files/fp_latest_weekly.csv`. It's a scrape of FantasyPros' full weekly ECR for **every** ranked player (1006 rows, `scrape_date` 2026-10-23), with `ecr`, `sd`, `best`, `worst`, `pos_rank`, `start_sit_grade`, `r2p_pts`, opponent and game status. Pages: `qb`, `ppr-rb`, `ppr-wr`, `ppr-te`, `k`, `dst` (+ IDP). **PPR only** for skill positions, so no half/std ECR. Keyed by `fantasypros_id` (same as the API `player_id`). It's FantasyPros data, so cite FantasyPros. Ingested by `startsit.ingest.rankings` (archived per `scrape_date`; week inferred from kickoff dates vs. the schedule, since the file has no week column). Still to check: update cadence across the week.

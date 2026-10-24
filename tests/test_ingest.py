@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from typing import TypedDict
 
 import polars as pl
@@ -5,8 +6,9 @@ import pytest
 
 from startsit.db import TABLES, Table
 from startsit.features import compute_usage_features
-from startsit.ingest import nflverse
-from startsit.ingest.__main__ import run
+from startsit.ingest import news, nflverse
+from startsit.ingest.__main__ import run, run_news
+from startsit.llm import BudgetedLLM, FakeProvider
 
 
 def stat_row(player_id, week, position="WR", season_type="REG", **kw):
@@ -306,3 +308,27 @@ def test_table_ddl_is_generated_from_the_row_type():
     ddl = TABLES["games"].ddl()
     assert "game_id TEXT NOT NULL" in ddl and "gameday TEXT," in ddl and "PRIMARY KEY (game_id)" in ddl
     assert TABLES["usage_features"].polars_schema()["snap_pct_l3"] == pl.Float64
+
+
+RSS = b"""<rss><channel><item><title>Puka Nacua questionable</title><link>https://example.com/1</link>
+<pubDate>Sat, 24 Oct 2026 10:00:00 GMT</pubDate></item></channel></rss>"""
+
+
+def test_run_news_stores_items_and_extracts_facts(db):
+    db.upsert("players", [dict(player_id="NACUA", name="Puka Nacua", position="WR", team="LA", pfr_id=None)])
+    now = datetime(2026, 10, 24, 20, 0, tzinfo=UTC)
+    provider = FakeProvider(
+        responses=[
+            {
+                "facts": [
+                    dict(item_id="N1", player="Puka Nacua", team="LAR", event="injury", severity="medium", summary="Q.")
+                ]
+            }
+        ]
+    )
+    bodies = {news.Feed("RotoWire", "https://example.com/rss"): RSS}
+    counts = run_news(db, bodies, BudgetedLLM(provider, db, "news", 5), 2026, now)
+    assert counts == {"news_items": 1, "news_extracted": 1, "news_facts": 1, "llm_calls": 1}
+    assert db.query("select player_id, summary from news_facts") == [{"player_id": "NACUA", "summary": "Q."}]
+    # Without an LLM the items are still stored.
+    assert run_news(db, bodies, None, 2026, now) == {"news_items": 1}
