@@ -17,6 +17,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
+      # Supabase when the secret is set; otherwise a fresh SQLite file uploaded as an artifact.
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
       STARTSIT_DB_PATH: data/startsit.db
     steps:
       - uses: actions/checkout@v4
@@ -33,14 +35,16 @@ jobs:
         run: |
           python - >> "$GITHUB_STEP_SUMMARY" <<'PY'
           from startsit.db import Database
-          db = Database()
-          print("| source | season | max week | rows |\n|---|---|---|---|")
-          for r in db.query("select source, season, max_week, row_count from ingest_runs order by rowid desc limit 6"):
-              print(f"| {r['source']} | {r['season']} | {r['max_week']} | {r['row_count']} |")
+          with Database() as db:
+              print(f"Database: {'Postgres' if db.is_postgres else 'SQLite'}\n")
+              print("| source | season | max week | rows |\n|---|---|---|---|")
+              for r in db.recent_runs(7):
+                  print(f"| {r['source']} | {r['season']} | {r['max_week']} | {r['row_count']} |")
           PY
-      # No Supabase project yet: keep the SQLite file as an artifact. Each run is a
-      # full-season refresh, so nothing depends on a previous run's file.
-      - uses: actions/upload-artifact@v4
+      # Without Supabase, keep the SQLite file as an artifact. Each run is a full-season
+      # refresh, but rankings history only accumulates in a persistent database.
+      - if: ${{ env.DATABASE_URL == '' }}
+        uses: actions/upload-artifact@v4
         with:
           name: startsit-db
           path: data/startsit.db

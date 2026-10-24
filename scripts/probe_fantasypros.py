@@ -63,10 +63,18 @@ def main():
     s = args.season
 
     for scoring in ("PPR", "HALF", "STD"):
-        probe(key, f"weekly ECR {scoring}", f"{s}/consensus-rankings",
-              {"position": "ALL", "type": "weekly", "scoring": scoring, **week})
-    probe(key, "weekly ECR RB PPR", f"{s}/consensus-rankings",
-          {"position": "RB", "type": "weekly", "scoring": "PPR", **week})
+        probe(
+            key,
+            f"weekly ECR {scoring}",
+            f"{s}/consensus-rankings",
+            {"position": "ALL", "type": "weekly", "scoring": scoring, **week},
+        )
+    probe(
+        key,
+        "weekly ECR RB PPR",
+        f"{s}/consensus-rankings",
+        {"position": "RB", "type": "weekly", "scoring": "PPR", **week},
+    )
     probe(key, "weekly projections", f"{s}/projections", {"position": "ALL", **week})
     probe(key, "news", "news", {"limit": 10})
     probe(key, "injuries", "injuries", {})

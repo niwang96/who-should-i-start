@@ -28,11 +28,24 @@ SKILL_PAGES = ["qb", "ppr-rb", "ppr-wr", "ppr-te"]
 FLOAT_COLS = {"ecr": "ecr", "sd": "ecr_sd", "best": "ecr_best", "worst": "ecr_worst", "r2p_pts": "proj_ppr"}
 
 RANKINGS_SCHEMA = {
-    "season": pl.Int64, "week": pl.Int64, "scrape_date": pl.String, "fantasypros_id": pl.String,
-    "player_id": pl.String, "player_name": pl.String, "position": pl.String, "team": pl.String,
-    "opponent": pl.String, "ecr": pl.Float64, "ecr_sd": pl.Float64, "ecr_best": pl.Float64,
-    "ecr_worst": pl.Float64, "proj_ppr": pl.Float64, "pos_rank": pl.String,
-    "start_sit_grade": pl.String, "game_status": pl.String, "source_url": pl.String,
+    "season": pl.Int64,
+    "week": pl.Int64,
+    "scrape_date": pl.String,
+    "fantasypros_id": pl.String,
+    "player_id": pl.String,
+    "player_name": pl.String,
+    "position": pl.String,
+    "team": pl.String,
+    "opponent": pl.String,
+    "ecr": pl.Float64,
+    "ecr_sd": pl.Float64,
+    "ecr_best": pl.Float64,
+    "ecr_worst": pl.Float64,
+    "proj_ppr": pl.Float64,
+    "pos_rank": pl.String,
+    "start_sit_grade": pl.String,
+    "game_status": pl.String,
+    "source_url": pl.String,
 }
 
 
@@ -115,4 +128,3 @@ def build_rankings(raw: RawRankings, games: pl.DataFrame, season: int) -> pl.Dat
         .unique(["season", "week", "scrape_date", "fantasypros_id"], keep="first")
         .sort("position", "ecr")
     )
-

@@ -75,7 +75,8 @@ Many users will ask about the same players, so cache per-player results.
 - **Language:** Python everywhere (author is primarily a Java dev; Python chosen for the nflverse/LLM ecosystem and resume range).
 - **Ingest:** Python jobs (`nflreadpy`) run by GitHub Actions cron, writing to Supabase.
 - **Web app:** FastAPI on Vercel's free Python functions; simple HTMX/Jinja frontend (no JS framework for MVP).
-- **DB:** Supabase (Postgres). Until a project exists, use local SQLite behind the same data-access layer.
+- **DB:** Supabase (Postgres) via `DATABASE_URL` (session pooler URI; the direct connection is IPv6-only, which Actions/Vercel can't reach). Local SQLite when unset. All SQL lives in `startsit/db.py` and is written once for both backends; tests run on both.
+- **Code quality:** ruff (lint + format) and mypy run in CI alongside pytest.
 - **LLM:** Gemini free tier, behind a provider interface so the model can be swapped. Unit tests use a fake provider and never call a real LLM.
 
 ## Secrets
@@ -112,6 +113,8 @@ Many users will ask about the same players, so cache per-player results.
 - [ ] Confirm Gemini free-tier limits (provider chosen: Gemini)
 - [x] Draft evidence packet schema (`startsit.evidence`: numbered items E1..En with kind/text/source_url; `to_text()` is what the LLM sees)
 - [ ] Draft Stage 3 prompt
+- [ ] Step 5: store the full evidence packet (text + item ids) with each logged recommendation. Injury reports and roster status are overwritten as they update, so the packet is the only record of what the user and LLM saw.
+- [ ] Confirm the Supabase connection from the cloud env: it has no direct TCP/DNS egress (Oct 24 2026), so allowlist the pooler host and check whether the proxy passes Postgres; otherwise verify via an Actions run.
 
 ## Timing
 The NFL regular season runs through early January. Shipping an MVP within ~2–3 weeks leaves time to collect real usage and several weeks of evaluation data.

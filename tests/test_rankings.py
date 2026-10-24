@@ -1,14 +1,13 @@
-from datetime import datetime, timezone
+from datetime import UTC, date, datetime
 
 import polars as pl
 
-from startsit.db import Database
 from startsit.ingest import rankings
 from startsit.ingest.__main__ import run_rankings
 
 
 def ts(utc: str) -> str:
-    return str(int(datetime.fromisoformat(utc).replace(tzinfo=timezone.utc).timestamp()))
+    return str(int(datetime.fromisoformat(utc).replace(tzinfo=UTC).timestamp()))
 
 
 GAMES = pl.DataFrame(
@@ -22,17 +21,34 @@ GAMES = pl.DataFrame(
 
 def rank_row(fp_id, name, page="ppr-wr", pos="WR", ecr="16.2", r2p="15.1", kickoff="2026-10-25T17:00:00", **kw):
     row = dict(
-        page=page, page_pos=pos, scrape_date="2026-10-23", fantasypros_id=fp_id, player_name=name, team="PHI",
-        player_opponent="vs. DAL", ecr=ecr, sd="2.53", best="9", worst="25", r2p_pts=r2p, pos_rank=f"{pos}16",
-        start_sit_grade="A-", player_game_status="scheduled", player_game_kickoff_ts=ts(kickoff),
+        page=page,
+        page_pos=pos,
+        scrape_date="2026-10-23",
+        fantasypros_id=fp_id,
+        player_name=name,
+        team="PHI",
+        player_opponent="vs. DAL",
+        ecr=ecr,
+        sd="2.53",
+        best="9",
+        worst="25",
+        r2p_pts=r2p,
+        pos_rank=f"{pos}16",
+        start_sit_grade="A-",
+        player_game_status="scheduled",
+        player_game_kickoff_ts=ts(kickoff),
         player_page_url=f"https://www.fantasypros.com/nfl/players/{fp_id}.php",
     )
     return row | kw
 
 
 def raw(rows, ids=None):
-    ids = ids or [dict(fantasypros_id="19222", gsis_id="G1"), dict(fantasypros_id="23180", gsis_id="G2"),
-                  dict(fantasypros_id="23180", gsis_id="G2-dup"), dict(fantasypros_id=None, gsis_id="G9")]
+    ids = ids or [
+        dict(fantasypros_id="19222", gsis_id="G1"),
+        dict(fantasypros_id="23180", gsis_id="G2"),
+        dict(fantasypros_id="23180", gsis_id="G2-dup"),
+        dict(fantasypros_id=None, gsis_id="G9"),
+    ]
     return rankings.RawRankings(
         rankings=pl.DataFrame(rows, schema={k: pl.String for k in rows[0]}),
         player_ids=pl.DataFrame(ids, schema={"fantasypros_id": pl.String, "gsis_id": pl.String}),
@@ -70,15 +86,24 @@ def test_build_rankings_skips_a_scrape_from_another_season():
     assert out.is_empty() and out.columns == list(rankings.RANKINGS_SCHEMA)
 
 
-def test_run_rankings_archives_each_scrape_once():
-    db = Database(":memory:")
-    db.upsert("games", [dict(game_id=f"g{i}", season=2026, week=w, gameday=d, home_team="PHI", away_team="DAL")
-                        for i, (w, d) in enumerate(zip(GAMES["week"], GAMES["gameday"]))])
+def test_run_rankings_archives_each_scrape_once(db):
     first = raw([rank_row("19222", "DeVonta Smith")])
-    assert run_rankings(db, first, 2026) == 1
-    assert run_rankings(db, first, 2026) == 1  # same scrape re-ingested: no duplicate
+    today = date(2026, 10, 24)
+    assert run_rankings(db, first, GAMES, 2026, today) == 1
+    assert run_rankings(db, first, GAMES, 2026, today) == 1  # same scrape re-ingested: no duplicate
     later = raw([rank_row("19222", "DeVonta Smith", scrape_date="2026-10-24", ecr="14.0")])
-    run_rankings(db, later, 2026)
+    run_rankings(db, later, GAMES, 2026, today)
     assert db.query("select scrape_date, ecr from rankings order by scrape_date") == [
-        {"scrape_date": "2026-10-23", "ecr": 16.2}, {"scrape_date": "2026-10-24", "ecr": 14.0}]
-    assert run_rankings(db, first, 2025) == 0
+        {"scrape_date": "2026-10-23", "ecr": 16.2},
+        {"scrape_date": "2026-10-24", "ecr": 14.0},
+    ]
+    assert db.latest_ranking("G1", 2026, 7)["ecr"] == 14.0
+    assert db.latest_rankings_week(2026) == 7
+    assert run_rankings(db, first, GAMES, 2025, today) == 0
+
+
+def test_run_rankings_warns_about_a_stale_scrape(db, caplog):
+    run_rankings(db, raw([rank_row("19222", "DeVonta Smith")]), GAMES, 2026, today=date(2026, 10, 24))
+    assert "days old" not in caplog.text
+    run_rankings(db, raw([rank_row("19222", "DeVonta Smith")]), GAMES, 2026, today=date(2026, 10, 30))
+    assert "rankings scrape is 7 days old" in caplog.text

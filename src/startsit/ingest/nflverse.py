@@ -1,4 +1,4 @@
-"""nflverse ingest: weekly usage, fantasy points, expected points, injury reports, schedule.
+"""nflverse ingest: weekly usage, fantasy points, expected points, rosters, injury reports, schedule.
 
 Fetching is kept separate from the transforms so the transforms can be tested with
 small hand-built frames and no network.
@@ -24,6 +24,7 @@ class RawNflverse:
     ff_opportunity: pl.DataFrame
     injuries: pl.DataFrame
     players: pl.DataFrame
+    rosters: pl.DataFrame
     schedules: pl.DataFrame
 
 
@@ -36,6 +37,7 @@ def fetch(season: int) -> RawNflverse:
         ff_opportunity=nfl.load_ff_opportunity([season]),
         injuries=nfl.load_injuries([season]),
         players=nfl.load_players(),
+        rosters=nfl.load_rosters_weekly([season]),
         schedules=nfl.load_schedules([season]),
     )
 
@@ -50,9 +52,7 @@ def build_player_weeks(raw: RawNflverse) -> pl.DataFrame:
     id_map = raw.players.select("gsis_id", "pfr_id").drop_nulls().unique("pfr_id")
 
     snaps = (
-        raw.snap_counts.filter(
-            (pl.col("game_type") == "REG") & pl.col("position").is_in(SKILL_POSITIONS)
-        )
+        raw.snap_counts.filter((pl.col("game_type") == "REG") & pl.col("position").is_in(SKILL_POSITIONS))
         .join(id_map, left_on="pfr_player_id", right_on="pfr_id", how="inner")
         .select(
             pl.col("gsis_id").alias("player_id"),
@@ -126,27 +126,67 @@ def build_player_weeks(raw: RawNflverse) -> pl.DataFrame:
     ).sort(keys)
 
 
-def build_players(raw: RawNflverse, player_weeks: pl.DataFrame) -> pl.DataFrame:
-    """Players who appear in this season's weekly data, with their latest team."""
-    latest_team = (
-        player_weeks.sort("week")
-        .group_by("player_id")
-        .agg(pl.col("team").drop_nulls().last().alias("current_team"))
+def _skill_rosters(raw: RawNflverse) -> pl.DataFrame:
+    return raw.rosters.filter(
+        (pl.col("game_type") == "REG") & pl.col("position").is_in(SKILL_POSITIONS) & pl.col("gsis_id").is_not_null()
     )
-    # No position filter here: player_weeks is already limited to skill positions, and
-    # the players table can list a different one (e.g. FB for a back who plays RB).
+
+
+def build_roster_weeks(raw: RawNflverse) -> pl.DataFrame:
+    """Each player's team and roster status per week (ACT, RES, DEV, CUT, RET, ...)."""
     return (
-        raw.players.select(
+        _skill_rosters(raw)
+        .select(
             pl.col("gsis_id").alias("player_id"),
-            pl.col("display_name").alias("name"),
-            pl.col("position").fill_null("UNK"),
-            pl.col("latest_team").alias("team"),
-            "pfr_id",
+            pl.col("season").cast(pl.Int64),
+            pl.col("week").cast(pl.Int64),
+            "team",
+            "status",
         )
-        .unique("player_id")
-        .join(latest_team, on="player_id", how="inner")
-        .with_columns(pl.coalesce("current_team", "team").alias("team"))
-        .drop("current_team")
+        .unique(["player_id", "season", "week"], keep="last")
+        .sort("player_id", "season", "week")
+    )
+
+
+def build_players(raw: RawNflverse, player_weeks: pl.DataFrame) -> pl.DataFrame:
+    """Skill-position players on a roster this season or with a game this season.
+
+    Rosters are included so players who haven't played yet (rookies, returns from
+    injury) can still be asked about. The team is the latest roster team, which follows
+    trades and releases; the team of the last game is only a fallback.
+    """
+    from_roster = (
+        _skill_rosters(raw)
+        .sort("week")
+        .group_by("gsis_id")
+        .agg(
+            pl.col("full_name").last().alias("roster_name"),
+            pl.col("position").last().alias("roster_position"),
+            pl.col("team").drop_nulls().last().alias("roster_team"),
+            pl.col("pfr_id").drop_nulls().last().alias("roster_pfr_id"),
+        )
+        .rename({"gsis_id": "player_id"})
+    )
+    game_team = (
+        player_weeks.sort("week").group_by("player_id").agg(pl.col("team").drop_nulls().last().alias("game_team"))
+    )
+    master = raw.players.select(
+        pl.col("gsis_id").alias("player_id"), "display_name", pl.col("position").alias("master_position"), "pfr_id"
+    ).unique("player_id")
+    ids = pl.concat([from_roster.select("player_id"), player_weeks.select("player_id")]).unique()
+    # Position: the master table's (it can list e.g. FB for a back who plays RB), else the roster's.
+    return (
+        ids.join(from_roster, on="player_id", how="left")
+        .join(master, on="player_id", how="left")
+        .join(game_team, on="player_id", how="left")
+        .select(
+            "player_id",
+            pl.coalesce("display_name", "roster_name").alias("name"),
+            pl.coalesce("master_position", "roster_position", pl.lit("UNK")).alias("position"),
+            pl.coalesce("roster_team", "game_team").alias("team"),
+            pl.coalesce("pfr_id", "roster_pfr_id").alias("pfr_id"),
+        )
+        .filter(pl.col("name").is_not_null())
         .sort("player_id")
     )
 
@@ -154,9 +194,7 @@ def build_players(raw: RawNflverse, player_weeks: pl.DataFrame) -> pl.DataFrame:
 def build_injuries(raw: RawNflverse) -> pl.DataFrame:
     return (
         raw.injuries.filter(
-            (pl.col("game_type") == "REG")
-            & pl.col("position").is_in(SKILL_POSITIONS)
-            & pl.col("gsis_id").is_not_null()
+            (pl.col("game_type") == "REG") & pl.col("position").is_in(SKILL_POSITIONS) & pl.col("gsis_id").is_not_null()
         )
         .select(
             pl.col("gsis_id").alias("player_id"),

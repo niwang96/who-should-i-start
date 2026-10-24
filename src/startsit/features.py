@@ -25,19 +25,14 @@ def _features_through(weeks: pl.DataFrame, through_week: int) -> pl.DataFrame:
         pl.col("snap_pct").mean().alias("snap_pct_l3"),
         pl.col("target_share").mean().alias("target_share_l3"),
         (pl.col("targets") + pl.col("carries")).mean().alias("opportunities_l3"),
-        *[
-            pl.col(c).mean().alias(f"{c}_l3")
-            for c in ("fp_std", "fp_half", "fp_ppr", "xfp_std", "xfp_half", "xfp_ppr")
-        ],
+        *[pl.col(c).mean().alias(f"{c}_l3") for c in ("fp_std", "fp_half", "fp_ppr", "xfp_std", "xfp_half", "xfp_ppr")],
     )
     season = hist.group_by("player_id", "season").agg(
         pl.len().alias("games"),
         pl.col("week").max().cast(pl.Int64).alias("last_game_week"),
         pl.col("xfp_ppr").mean().alias("xfp_ppr_season"),
     )
-    prior_snaps = prior.group_by("player_id", "season").agg(
-        pl.col("snap_pct").mean().alias("snap_pct_prior")
-    )
+    prior_snaps = prior.group_by("player_id", "season").agg(pl.col("snap_pct").mean().alias("snap_pct_prior"))
 
     return (
         season.join(l3, on=["player_id", "season"])

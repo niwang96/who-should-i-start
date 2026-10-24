@@ -10,20 +10,30 @@ baseline score, and evidence packet (step 2).
 python -m venv .venv && . .venv/bin/activate
 pip install -e '.[dev]'
 cp .env.example .env   # fill in keys; never commit .env
-pytest
+ruff check . && ruff format --check . && mypy && pytest
 ```
+Tests run against in-memory SQLite, and also against Postgres when
+`STARTSIT_TEST_DATABASE_URL` points at a disposable database (CI starts one).
+
+## Database
+`startsit.db.Database` is the only module with SQL. It talks to Postgres (Supabase) when given
+a `postgres://` URL or when `DATABASE_URL` is set, and to a local SQLite file otherwise
+(`STARTSIT_DB_PATH`, default `data/startsit.db`).
 
 ## Ingest (Stage 1)
 ```bash
-python -m startsit.ingest              # current season → data/startsit.db
+python -m startsit.ingest              # current season → $DATABASE_URL or data/startsit.db
 python -m startsit.ingest --season 2025 --db /tmp/test.db
 ```
 Each run re-ingests the full season from nflverse and upserts, so it is safe to re-run.
-GitHub Actions runs it daily (`.github/workflows/ingest.yml`) and uploads the SQLite file
-as an artifact until a Supabase project exists.
+GitHub Actions runs it daily (`.github/workflows/ingest.yml`), writing to Supabase when the
+`DATABASE_URL` repository secret is set (otherwise it uploads a SQLite file as an artifact).
 
 Tables (QB/RB/WR/TE, regular season only):
-- `players` — GSIS id, name, position, current team
+- `players` — GSIS id, name, position, current roster team; includes rostered players who
+  haven't played yet (rookies, returns from injury)
+- `roster_weeks` — each player's team and roster status per week (active, reserve/IR,
+  practice squad, cut, retired, ...); follows trades and releases
 - `player_weeks` — per game: snap %, targets, carries, target share, WOPR, actual and expected
   fantasy points in standard / half-PPR / PPR
 - `injuries` — weekly official injury report status
@@ -44,9 +54,11 @@ derived by subtracting 0.5 / 1.0 × expected receptions.
 python -m startsit.evidence "DeVonta Smith" "Puka Nacua" --scoring half
 ```
 prints the compact, numbered evidence (E1, E2, ...) the Stage 3 LLM will see, plus the
-code-only baseline pick. The baseline is currently 100% FantasyPros consensus: projected
-points (PPR) converted to the league's format by removing points for expected catches
-(from recent usage), and zero for players on bye or ruled Out. Usage adjustments will be
+code-only baseline pick. Add a team to disambiguate: `"Ryan Miller (NE)"`. The baseline is
+currently 100% FantasyPros consensus: projected points (PPR) converted to the league's format
+by removing points for expected catches (from recent usage), and zero for players on bye,
+ruled Out, cut or retired. New evidence kinds are added as one function in
+`evidence.ITEM_BUILDERS`. Usage adjustments will be
 added only if the weekly evaluation shows they help.
 
 Data: [nflverse](https://github.com/nflverse) via `nflreadpy`; expert consensus rankings from
