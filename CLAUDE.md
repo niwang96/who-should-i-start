@@ -93,7 +93,10 @@ Many users will ask about the same players, so cache per-player results.
 
 ## Open to-dos
 - [x] Request FantasyPros API key (approved; key pending delivery)
-- [ ] Test what the free FantasyPros key returns (likely `x-api-key` header on `api.fantasypros.com` — confirm from their docs)
+- [ ] Test what the free FantasyPros key returns. **Blocked from the Claude Code cloud env (Oct 24 2026):** its network policy denies every `*.fantasypros.com` host (proxy 403), so no live call was made; allowlist `api.fantasypros.com` in the env's network settings, or run `scripts/probe_fantasypros.py` locally/in Actions (it never prints the key). Known from docs so far (unverified against the key):
+  - Auth is the `x-api-key` header; base URL is `https://api.fantasypros.com/public/v2/json`, e.g. `GET /nfl/2026/consensus-rankings?position=ALL&type=weekly&scoring=PPR&week=N`. Scoring values are probably `PPR`/`HALF`/`STD` — check against the response.
+  - A third-party client's docs list other endpoints: projections (`week`, rest-of-season), player points, injuries (with probabilities), news, players, and experts. There is no start/sit endpoint; the closest thing is weekly ECR.
+  - Reported pitfalls: free keys may silently truncate responses (look for a `limits`/tier field); unknown params are ignored and you get a 200 with defaults, so check the returned scoring/week. No numeric rate limit is published; expect 429s.
 - [x] Verify `GEMINI_API_KEY` works from the Claude Code cloud env (Oct 24 2026: `gemini-3.5-flash` OK; `gemini-2.5-flash` returns 404 "no longer available to new users")
 - [ ] Verify RSS feed URLs
 - [ ] Test Reddit `.json` access from the deployed environment
