@@ -21,7 +21,7 @@ Purpose: portfolio/resume project. It should have real users beyond the author (
 ### FantasyPros API — expert consensus (+ news)
 - Free public API for **personal, non-commercial use**; request a key at secure.fantasypros.com/api-keys/request with a description of intended use.
 - Terms: must not build a product that directly competes with FantasyPros; must cite FantasyPros as the source; player images (Sportradar-licensed) can't be used.
-- Free keys may return only a sample slice of some datasets (e.g., full projections). **Test what the key actually returns before designing around it.**
+- Free keys return at most 10 rows per call (tested Oct 24 2026; details under Open to-dos).
 - In the access request, describe it as a free, non-commercial portfolio project that uses their consensus as one input alongside news/usage analysis.
 
 ### nflverse — usage and stats
@@ -85,18 +85,22 @@ Many users will ask about the same players, so cache per-player results.
 
 ## Build order
 1. Skeleton + nflverse ingest + usage features + Actions cron
-2. Baseline score + evidence packet (nflverse FF Rankings as consensus fallback until FantasyPros key arrives)
+2. Baseline score + evidence packet (nflverse FF Rankings as primary consensus — the free FantasyPros key caps ECR at 10 rows; add FantasyPros per-player projections as a supplementary signal)
 3. RSS news + cached LLM extraction (L2 cache keyed by URL)
 4. Stage 3 decide call with structured output, validated against packet evidence IDs
 5. Web UI + recommendation logging
 6. Weekly evaluation, then Reddit as an optional signal
 
 ## Open to-dos
-- [x] Request FantasyPros API key (approved; key pending delivery)
-- [ ] Test what the free FantasyPros key returns. **Blocked from the Claude Code cloud env (Oct 24 2026):** its network policy denies every `*.fantasypros.com` host (proxy 403), so no live call was made; allowlist `api.fantasypros.com` in the env's network settings, or run `scripts/probe_fantasypros.py` locally/in Actions (it never prints the key). Known from docs so far (unverified against the key):
-  - Auth is the `x-api-key` header; base URL is `https://api.fantasypros.com/public/v2/json`, e.g. `GET /nfl/2026/consensus-rankings?position=ALL&type=weekly&scoring=PPR&week=N`. Scoring values are probably `PPR`/`HALF`/`STD` — check against the response.
-  - A third-party client's docs list other endpoints: projections (`week`, rest-of-season), player points, injuries (with probabilities), news, players, and experts. There is no start/sit endpoint; the closest thing is weekly ECR.
-  - Reported pitfalls: free keys may silently truncate responses (look for a `limits`/tier field); unknown params are ignored and you get a 200 with defaults, so check the returned scoring/week. No numeric rate limit is published; expect 429s.
+- [x] Request FantasyPros API key (approved; key received)
+- [x] Test what the free FantasyPros key returns (Oct 24 2026, from the Claude Code cloud env after allowlisting `api.fantasypros.com`; re-run with `scripts/probe_fantasypros.py`, which never prints the key):
+  - Auth: `x-api-key` header. Base URL: `https://api.fantasypros.com/public/v2/json/nfl`. Every response includes `tier: "free"` and `limit: 10`.
+  - **The free tier returns at most 10 rows per call.** `limit`, `offset`, `start` and `page` are ignored, so there's no paging. `count` still reports the full total (e.g., 378 for weekly FLX ECR).
+  - `GET /2026/consensus-rankings?position=ALL|QB|RB|WR|TE|K|DST&type=weekly&scoring=PPR|HALF|STD&week=N`: all three scoring values work and are echoed back. An unknown scoring value silently falls back to `STD`. With no `week`, the API returns the current week (7 on Oct 24); `week=8` returns 0 players. Each row has `rank_ecr`, `pos_rank`, `rank_ave/min/max/std`, opponent, game status and ownership. Single-position calls also include `start_sit_grade` (e.g., "A+"), `tag` ("start"), and `r2p_pts` (projected points). No player-ID filter works here, so **ECR only covers the top 10 at each position**, which isn't enough for real start/sit questions.
+  - `GET /2026/projections?position=WR&players=<fpid,...>`: the `players` filter works (with a single position, not `ALL`) and reaches beyond the top 10 (e.g., DeVonta Smith). Each row has `points`, `points_ppr` and `points_half` regardless of the `scoring` param. Some players came back empty (e.g., Rashee Rice, Emeka Egbuka); the cause is unknown, so handle a missing projection. This is the best usable per-player FantasyPros signal; `fpid` = `player_id`.
+  - `GET /news`, `/injuries`, `/players`: 10 newest/top rows only, and no player or team filter worked. Injuries include `probability_of_playing` and Wed/Thu/Fri practice status (e.g., Limited/DNP), which is useful but limited to 10 players. News rows include title, description, `player_id` and a link.
+  - No rate-limit headers; responses are served through CloudFront (cached). No 429s in ~40 calls.
+  - Implication: nflverse FF Rankings stays the primary consensus source. Use FantasyPros per-player projections (and top-10 ECR/start-sit grade when available) as a supplementary, cited signal.
 - [x] Verify `GEMINI_API_KEY` works from the Claude Code cloud env (Oct 24 2026: `gemini-3.5-flash` OK; `gemini-2.5-flash` returns 404 "no longer available to new users")
 - [ ] Verify RSS feed URLs
 - [ ] Test Reddit `.json` access from the deployed environment
