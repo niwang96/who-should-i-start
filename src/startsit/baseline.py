@@ -2,8 +2,8 @@
 
 Currently 100% FantasyPros consensus. Each player's consensus projection (PPR, from
 the weekly rankings) is converted to the league's scoring format, then zeroed for
-players who can't play (bye, ruled Out, cut or retired). Usage-based adjustments are
-deliberately left out until the weekly evaluation shows whether they help.
+players who can't play: on bye, ruled Out, or not on the active roster. Usage-based
+adjustments are deliberately left out until the weekly evaluation shows whether they help.
 
 Points, not ranks, are compared, because ECR ranks are per position (is RB20 better
 than WR16?).
@@ -25,9 +25,24 @@ DESCRIPTION = "100% FantasyPros consensus"
 # Injury report statuses that mean the player won't play. Doubtful/Questionable are left
 # to the consensus (experts already discount them) and to the LLM.
 OUT_STATUSES = {"Out"}
-# Roster statuses with no path to playing this week. Reserve (IR) and practice-squad
-# players can be activated before kickoff, so those are left to the consensus too.
-NO_TEAM_STATUSES = {"CUT": "cut", "RET": "retired"}
+# Only players on the active roster can play; every other roster status scores zero
+# (decided Oct 24 2026). nflverse can lag an activation or practice-squad elevation by a
+# day or two, which the packet's roster-status item makes visible to the LLM.
+PLAYABLE_STATUSES = {"ACT"}
+ROSTER_STATUS_LABELS = {
+    "RES": "on a reserve list (IR/PUP/NFI)",
+    "DEV": "on the practice squad",
+    "EXE": "on the exempt list",
+    "INA": "inactive",
+    "CUT": "released",
+    "RET": "retired",
+}
+# Statuses where the player has no team at all.
+NO_TEAM_STATUSES = {"CUT", "RET"}
+
+
+def roster_status_label(status: str) -> str:
+    return ROSTER_STATUS_LABELS.get(status, f"roster status {status}")
 
 
 @dataclass(frozen=True)
@@ -59,8 +74,8 @@ def convert_ppr(points_ppr: float, exp_receptions: float, scoring: Scoring) -> f
 
 
 def score(inp: BaselineInput, scoring: Scoring) -> BaselineScore:
-    if inp.roster_status in NO_TEAM_STATUSES:
-        return BaselineScore(inp.player_id, 0.0, f"{NO_TEAM_STATUSES[inp.roster_status]}, not on an active roster")
+    if inp.roster_status is not None and inp.roster_status not in PLAYABLE_STATUSES:
+        return BaselineScore(inp.player_id, 0.0, f"{roster_status_label(inp.roster_status)}, not on the active roster")
     if inp.on_bye:
         return BaselineScore(inp.player_id, 0.0, "on bye")
     if inp.report_status in OUT_STATUSES:

@@ -27,15 +27,6 @@ NFLVERSE_URL = "https://github.com/nflverse/nflverse-data"
 
 EvidenceKind = Literal["availability", "consensus", "projection", "usage", "injury"]
 
-ROSTER_STATUS_TEXT = {
-    "RES": "on a reserve list (IR/PUP/NFI); can be activated before kickoff",
-    "DEV": "on the practice squad; would need to be elevated to play",
-    "INA": "listed inactive",
-    "EXE": "on the exempt list",
-    "CUT": "released (not on an active roster)",
-    "RET": "retired",
-}
-
 
 @dataclass(frozen=True)
 class Question:
@@ -219,8 +210,9 @@ def _pct(x: float | None) -> str:
 def availability_facts(ctx: PlayerContext, q: Question) -> list[Fact]:
     facts = []
     status = ctx.roster["status"] if ctx.roster else None
-    if status in ROSTER_STATUS_TEXT:
-        facts.append(Fact("availability", f"Roster status: {ROSTER_STATUS_TEXT[status]}", NFLVERSE_URL))
+    if status is not None and status not in baseline.PLAYABLE_STATUSES:
+        label = baseline.roster_status_label(status)
+        facts.append(Fact("availability", f"Roster status: {label} (not on the active roster)", NFLVERSE_URL))
     if ctx.on_bye:
         facts.append(Fact("availability", f"{ctx.team} is on bye in week {q.week}", NFLVERSE_URL))
     return facts

@@ -195,16 +195,19 @@ def test_traded_player_uses_roster_history(seeded):
     assert not any("PHI" in t for t in texts(p, 0))
 
 
-def test_roster_status_items_and_zeroes(seeded):
-    p = build_packet(seeded, ["JACOBS", "CUT", "IR"], "ppr", 2026, 7)
-    jacobs, cut, ir = p.players
-    # A player returning without a 2026 game is queryable and keeps his consensus projection.
-    assert jacobs.score.points == 12.0
-    assert "Roster status: on the exempt list" in texts(p, 0)
-    assert (cut.score.points, cut.score.note) == (0.0, "cut, not on an active roster")
-    assert ir.score.points == 6.7  # IR players can be activated; left to the consensus
-    assert texts(p, 2)[0].startswith("Roster status: on a reserve list (IR/PUP/NFI)")
-    assert "favors Josh Jacobs by 5.3 pts" in p.to_text()
+def test_only_active_roster_players_can_score(seeded):
+    p = build_packet(seeded, ["JACOBS", "CUT", "IR", "SMITH"], "ppr", 2026, 7)
+    jacobs, cut, ir, smith = p.players
+    # A player without a 2026 game is still queryable, but exempt/reserve/released all score zero.
+    assert (jacobs.score.points, jacobs.score.note) == (0.0, "on the exempt list, not on the active roster")
+    assert "Roster status: on the exempt list (not on the active roster)" in texts(p, 0)
+    assert "FantasyPros consensus RB20" in texts(p, 0)[1]  # the experts' view is still shown
+    assert (cut.score.points, cut.score.note) == (0.0, "released, not on the active roster")
+    assert cut.team is None and "Najee Harris (RB, FA)" in p.to_text()
+    assert ir.score.points == 0.0
+    assert texts(p, 2)[0] == "Roster status: on a reserve list (IR/PUP/NFI) (not on the active roster)"
+    assert smith.score.points == 15.1  # no roster row: left to the consensus
+    assert "favors DeVonta Smith by 15.1 pts" in p.to_text()
 
 
 def test_packet_rejects_bad_input(seeded):

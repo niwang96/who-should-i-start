@@ -28,8 +28,12 @@ def test_qbs_and_missing_usage_keep_the_ppr_projection():
         (dict(on_bye=True), "on bye"),
         (dict(report_status="Out"), "ruled Out"),
         (dict(proj_ppr=None), "not in FantasyPros weekly rankings"),
-        (dict(roster_status="CUT"), "cut, not on an active roster"),
-        (dict(roster_status="RET"), "retired, not on an active roster"),
+        (dict(roster_status="CUT"), "released, not on the active roster"),
+        (dict(roster_status="RET"), "retired, not on the active roster"),
+        (dict(roster_status="RES"), "on a reserve list (IR/PUP/NFI), not on the active roster"),
+        (dict(roster_status="DEV"), "on the practice squad, not on the active roster"),
+        (dict(roster_status="EXE"), "on the exempt list, not on the active roster"),
+        (dict(roster_status="TRT"), "roster status TRT, not on the active roster"),
     ],
 )
 def test_players_who_cant_score_get_zero(kw, note):
@@ -37,10 +41,10 @@ def test_players_who_cant_score_get_zero(kw, note):
     assert (s.points, s.note) == (0.0, note)
 
 
-def test_questionable_reserve_and_practice_squad_are_left_to_the_consensus():
+def test_active_questionable_and_unknown_roster_are_left_to_the_consensus():
     assert score(inp(report_status="Questionable"), "ppr").points == 15.0
-    assert score(inp(roster_status="RES"), "ppr").points == 15.0
-    assert score(inp(roster_status="DEV"), "ppr").points == 15.0
+    assert score(inp(roster_status="ACT"), "ppr").points == 15.0
+    assert score(inp(roster_status=None), "ppr").points == 15.0
 
 
 def test_pick_returns_winner_and_margin():
