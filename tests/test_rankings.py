@@ -2,6 +2,7 @@ from datetime import UTC, date, datetime
 
 import polars as pl
 
+from startsit.db import TABLES
 from startsit.ingest import rankings
 from startsit.ingest.__main__ import run_rankings
 
@@ -83,7 +84,7 @@ def test_build_rankings_maps_ids_and_keeps_skill_positions():
 
 def test_build_rankings_skips_a_scrape_from_another_season():
     out = rankings.build_rankings(raw([rank_row("19222", "DeVonta Smith")]), GAMES, 2025)
-    assert out.is_empty() and out.columns == list(rankings.RANKINGS_SCHEMA)
+    assert out.is_empty() and out.columns == TABLES["rankings"].columns
 
 
 def test_run_rankings_archives_each_scrape_once(db):

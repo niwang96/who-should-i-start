@@ -4,153 +4,36 @@ Two backends behind one class: SQLite (a file path, for local work and tests) an
 Postgres (a postgres:// URL, i.e. Supabase). SQL is written once with `?` placeholders
 and only uses syntax both accept; the Postgres backend translates the placeholders.
 Callers use the named query methods below, so they never depend on the backend.
+
+Each table is defined once, as a TypedDict of its columns plus its primary key (`Table`).
+The CREATE TABLE statement, the polars schema used to build frames for it, and the
+typed rows the query methods return all come from that one definition.
 """
 
 from __future__ import annotations
 
 import os
 import sqlite3
+import types
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
-from typing import Any, TypedDict, cast
+from typing import Any, TypedDict, cast, get_args, get_type_hints
+
+import polars as pl
 
 DEFAULT_DB_PATH = "data/startsit.db"
 
-# Types: TEXT, INTEGER and DOUBLE PRECISION mean the same in both backends (Postgres
-# REAL is single precision, so it isn't used).
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS players (
-    player_id   TEXT PRIMARY KEY,  -- nflverse GSIS id
-    name        TEXT NOT NULL,
-    position    TEXT NOT NULL,
-    team        TEXT,  -- latest roster team
-    pfr_id      TEXT
-);
 
-CREATE TABLE IF NOT EXISTS roster_weeks (
-    player_id  TEXT NOT NULL,
-    season     INTEGER NOT NULL,
-    week       INTEGER NOT NULL,
-    team       TEXT,
-    status     TEXT,  -- ACT, RES (IR/PUP/NFI), DEV (practice squad), CUT, RET, INA, EXE, ...
-    PRIMARY KEY (player_id, season, week)
-);
-
-CREATE TABLE IF NOT EXISTS player_weeks (
-    player_id        TEXT NOT NULL,
-    season           INTEGER NOT NULL,
-    week             INTEGER NOT NULL,
-    team             TEXT,
-    opponent         TEXT,
-    offense_snaps    INTEGER,
-    snap_pct         DOUBLE PRECISION,
-    targets          INTEGER,
-    carries          INTEGER,
-    receptions       INTEGER,
-    target_share     DOUBLE PRECISION,
-    air_yards_share  DOUBLE PRECISION,
-    wopr             DOUBLE PRECISION,
-    fp_std           DOUBLE PRECISION,
-    fp_half          DOUBLE PRECISION,
-    fp_ppr           DOUBLE PRECISION,
-    xfp_std          DOUBLE PRECISION,
-    xfp_half         DOUBLE PRECISION,
-    xfp_ppr          DOUBLE PRECISION,
-    PRIMARY KEY (player_id, season, week)
-);
-
--- Overwritten as reports update; recommendations must store the packet they used.
-CREATE TABLE IF NOT EXISTS injuries (
-    player_id        TEXT NOT NULL,
-    season           INTEGER NOT NULL,
-    week             INTEGER NOT NULL,
-    team             TEXT,
-    report_status    TEXT,
-    practice_status  TEXT,
-    injury           TEXT,
-    PRIMARY KEY (player_id, season, week)
-);
-
-CREATE TABLE IF NOT EXISTS usage_features (
-    player_id            TEXT NOT NULL,
-    season               INTEGER NOT NULL,
-    through_week         INTEGER NOT NULL,
-    games                INTEGER NOT NULL,
-    last_game_week       INTEGER NOT NULL,  -- features go stale if this lags through_week
-    snap_pct_l3          DOUBLE PRECISION,
-    snap_pct_trend       DOUBLE PRECISION,
-    target_share_l3      DOUBLE PRECISION,
-    opportunities_l3     DOUBLE PRECISION,
-    fp_std_l3            DOUBLE PRECISION,
-    fp_half_l3           DOUBLE PRECISION,
-    fp_ppr_l3            DOUBLE PRECISION,
-    xfp_std_l3           DOUBLE PRECISION,
-    xfp_half_l3          DOUBLE PRECISION,
-    xfp_ppr_l3           DOUBLE PRECISION,
-    xfp_ppr_season       DOUBLE PRECISION,
-    fp_minus_xfp_ppr_l3  DOUBLE PRECISION,
-    PRIMARY KEY (player_id, season, through_week)
-);
-
-CREATE TABLE IF NOT EXISTS games (
-    game_id    TEXT PRIMARY KEY,
-    season     INTEGER NOT NULL,
-    week       INTEGER NOT NULL,
-    gameday    TEXT,
-    home_team  TEXT NOT NULL,
-    away_team  TEXT NOT NULL
-);
-
--- FantasyPros weekly ECR, one archived copy per scrape (see startsit.ingest.rankings).
-CREATE TABLE IF NOT EXISTS rankings (
-    season           INTEGER NOT NULL,
-    week             INTEGER NOT NULL,
-    scrape_date      TEXT NOT NULL,
-    fantasypros_id   TEXT NOT NULL,
-    player_id        TEXT,  -- GSIS id; null for the few players the id map lacks
-    player_name      TEXT NOT NULL,
-    position         TEXT NOT NULL,
-    team             TEXT,  -- FantasyPros abbreviations (LAR, not nflverse's LA)
-    opponent         TEXT,  -- e.g. "vs. DAL", "at LV"
-    ecr              DOUBLE PRECISION,  -- average expert rank within position
-    ecr_sd           DOUBLE PRECISION,
-    ecr_best         DOUBLE PRECISION,
-    ecr_worst        DOUBLE PRECISION,
-    proj_ppr         DOUBLE PRECISION,  -- FantasyPros rank-to-points, PPR scoring
-    pos_rank         TEXT,
-    start_sit_grade  TEXT,
-    game_status      TEXT,
-    source_url       TEXT,
-    PRIMARY KEY (season, week, scrape_date, fantasypros_id)
-);
-
-CREATE TABLE IF NOT EXISTS ingest_runs (
-    source       TEXT NOT NULL,
-    season       INTEGER NOT NULL,
-    max_week     INTEGER,
-    row_count    INTEGER NOT NULL,
-    finished_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-"""
-
-PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
-    "players": ("player_id",),
-    "roster_weeks": ("player_id", "season", "week"),
-    "player_weeks": ("player_id", "season", "week"),
-    "injuries": ("player_id", "season", "week"),
-    "usage_features": ("player_id", "season", "through_week"),
-    "games": ("game_id",),
-    "rankings": ("season", "week", "scrape_date", "fantasypros_id"),
-}
-TABLES = (*PRIMARY_KEYS, "ingest_runs")
+# --- table definitions -------------------------------------------------------------
 
 
 class PlayerRow(TypedDict):
-    player_id: str
+    player_id: str  # nflverse GSIS id
     name: str
     position: str
-    team: str | None
+    team: str | None  # latest roster team
     pfr_id: str | None
 
 
@@ -159,10 +42,34 @@ class RosterRow(TypedDict):
     season: int
     week: int
     team: str | None
-    status: str | None
+    status: str | None  # ACT, RES (IR/PUP/NFI), DEV (practice squad), CUT, RET, INA, EXE, ...
+
+
+class PlayerWeekRow(TypedDict):
+    player_id: str
+    season: int
+    week: int
+    team: str | None
+    opponent: str | None
+    offense_snaps: int | None
+    snap_pct: float | None
+    targets: int | None
+    carries: int | None
+    receptions: int | None
+    target_share: float | None
+    air_yards_share: float | None
+    wopr: float | None
+    fp_ppr: float | None
+    fp_half: float | None
+    fp_std: float | None
+    xfp_ppr: float | None  # expected points from usage (FF Opportunity)
+    xfp_half: float | None
+    xfp_std: float | None
 
 
 class InjuryRow(TypedDict):
+    """Overwritten as reports update; recommendations must store the packet they used."""
+
     player_id: str
     season: int
     week: int
@@ -177,40 +84,118 @@ class UsageRow(TypedDict):
     season: int
     through_week: int
     games: int
-    last_game_week: int
+    last_game_week: int  # features go stale if this lags through_week
     snap_pct_l3: float | None
     snap_pct_trend: float | None
     target_share_l3: float | None
     opportunities_l3: float | None
-    fp_std_l3: float
-    fp_half_l3: float
     fp_ppr_l3: float
-    xfp_std_l3: float
-    xfp_half_l3: float
+    fp_half_l3: float
+    fp_std_l3: float
     xfp_ppr_l3: float
+    xfp_half_l3: float
+    xfp_std_l3: float
     xfp_ppr_season: float
     fp_minus_xfp_ppr_l3: float
 
 
+class GameRow(TypedDict):
+    game_id: str
+    season: int
+    week: int
+    gameday: str | None
+    home_team: str
+    away_team: str
+
+
 class RankingRow(TypedDict):
+    """FantasyPros weekly ECR, one archived copy per scrape (see startsit.ingest.rankings)."""
+
     season: int
     week: int
     scrape_date: str
     fantasypros_id: str
-    player_id: str | None
+    player_id: str | None  # GSIS id; null for the few players the id map lacks
     player_name: str
     position: str
-    team: str | None
-    opponent: str | None
-    ecr: float | None
+    team: str | None  # FantasyPros abbreviations (LAR, not nflverse's LA)
+    opponent: str | None  # e.g. "vs. DAL", "at LV"
+    ecr: float | None  # average expert rank within position
     ecr_sd: float | None
     ecr_best: float | None
     ecr_worst: float | None
-    proj_ppr: float | None
+    proj_ppr: float | None  # FantasyPros rank-to-points, PPR scoring
     pos_rank: str | None
     start_sit_grade: str | None
     game_status: str | None
     source_url: str | None
+
+
+# Postgres REAL is single precision, so floats are DOUBLE PRECISION (same meaning in SQLite).
+_SQL_TYPES: dict[type, str] = {str: "TEXT", int: "INTEGER", float: "DOUBLE PRECISION"}
+_POLARS_TYPES: dict[type, type[pl.DataType]] = {str: pl.String, int: pl.Int64, float: pl.Float64}
+
+
+def _column_types(row: type) -> dict[str, tuple[type, bool]]:
+    """Column name -> (base type, nullable), from a TypedDict's annotations."""
+    out = {}
+    for name, hint in get_type_hints(row).items():
+        args = get_args(hint)
+        nullable = isinstance(hint, types.UnionType) and type(None) in args
+        out[name] = (next(a for a in args if a is not type(None)) if nullable else hint, nullable)
+    return out
+
+
+@dataclass(frozen=True)
+class Table:
+    name: str
+    row: type  # the TypedDict describing one row
+    key: tuple[str, ...]
+
+    @property
+    def columns(self) -> list[str]:
+        return list(get_type_hints(self.row))
+
+    def ddl(self) -> str:
+        cols = [
+            f"    {name} {_SQL_TYPES[base]}{'' if nullable else ' NOT NULL'}"
+            for name, (base, nullable) in _column_types(self.row).items()
+        ]
+        cols.append(f"    PRIMARY KEY ({', '.join(self.key)})")
+        return f"CREATE TABLE IF NOT EXISTS {self.name} (\n" + ",\n".join(cols) + "\n);"
+
+    def polars_schema(self) -> dict[str, type[pl.DataType]]:
+        return {name: _POLARS_TYPES[base] for name, (base, _) in _column_types(self.row).items()}
+
+
+TABLES: dict[str, Table] = {
+    t.name: t
+    for t in (
+        Table("players", PlayerRow, ("player_id",)),
+        Table("roster_weeks", RosterRow, ("player_id", "season", "week")),
+        Table("player_weeks", PlayerWeekRow, ("player_id", "season", "week")),
+        Table("injuries", InjuryRow, ("player_id", "season", "week")),
+        Table("usage_features", UsageRow, ("player_id", "season", "through_week")),
+        Table("games", GameRow, ("game_id",)),
+        Table("rankings", RankingRow, ("season", "week", "scrape_date", "fantasypros_id")),
+    )
+}
+
+# An append-only log with a database-side default, so it's written by hand.
+INGEST_RUNS_DDL = """CREATE TABLE IF NOT EXISTS ingest_runs (
+    source       TEXT NOT NULL,
+    season       INTEGER NOT NULL,
+    max_week     INTEGER,
+    row_count    INTEGER NOT NULL,
+    finished_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);"""
+
+SCHEMA = "\n\n".join([*(t.ddl() for t in TABLES.values()), INGEST_RUNS_DDL])
+ALL_TABLE_NAMES = (*TABLES, "ingest_runs")
+
+
+# A games row (alias g) involving a team; the placeholder is the team expression.
+_PLAYS = "(g.home_team = {0} OR g.away_team = {0})"
 
 
 def resolve_target(target: str | Path | None = None) -> str:
@@ -280,7 +265,7 @@ class Database:
         rows = list(rows)
         if not rows:
             return 0
-        keys = PRIMARY_KEYS[table]
+        keys = TABLES[table].key
         cols = list(rows[0].keys())
         non_keys = [c for c in cols if c not in keys]
         action = "DO UPDATE SET " + ", ".join(f"{c} = excluded.{c}" for c in non_keys) if non_keys else "DO NOTHING"
@@ -328,46 +313,35 @@ class Database:
                 return cast("list[PlayerRow]", rows)
         return []
 
-    def roster_status(self, player_id: str, season: int, week: int) -> RosterRow | None:
-        """The player's roster entry for `week`, else the latest one before it."""
-        return cast(
-            "RosterRow | None",
-            self._one(
-                "SELECT * FROM roster_weeks WHERE player_id = ? AND season = ? AND week <= ? "
-                "ORDER BY week DESC LIMIT 1",
-                (player_id, season, week),
-            ),
+    def _player_row(
+        self, table: str, player_id: str, season: int, condition: str, value: int, order_by: str | None = None
+    ) -> dict[str, Any] | None:
+        """One row of `table` for the player and season matching `condition` (newest first by `order_by`)."""
+        order = f" ORDER BY {order_by} DESC" if order_by else ""
+        return self._one(
+            f"SELECT * FROM {table} WHERE player_id = ? AND season = ? AND {condition}{order} LIMIT 1",
+            (player_id, season, value),
         )
 
+    def roster_status(self, player_id: str, season: int, week: int) -> RosterRow | None:
+        """The player's roster entry for `week`, else the latest one before it."""
+        return cast("RosterRow | None", self._player_row("roster_weeks", player_id, season, "week <= ?", week, "week"))
+
     def injury(self, player_id: str, season: int, week: int) -> InjuryRow | None:
-        return cast(
-            "InjuryRow | None",
-            self._one(
-                "SELECT * FROM injuries WHERE player_id = ? AND season = ? AND week = ?", (player_id, season, week)
-            ),
-        )
+        return cast("InjuryRow | None", self._player_row("injuries", player_id, season, "week = ?", week))
 
     def usage_before(self, player_id: str, season: int, week: int) -> UsageRow | None:
         """Usage features as of the latest week before `week` (no peeking at that week's game)."""
         return cast(
             "UsageRow | None",
-            self._one(
-                "SELECT * FROM usage_features WHERE player_id = ? AND season = ? AND through_week < ? "
-                "ORDER BY through_week DESC LIMIT 1",
-                (player_id, season, week),
-            ),
+            self._player_row("usage_features", player_id, season, "through_week < ?", week, "through_week"),
         )
 
     # --- rankings --------------------------------------------------------------
 
     def latest_ranking(self, player_id: str, season: int, week: int) -> RankingRow | None:
         return cast(
-            "RankingRow | None",
-            self._one(
-                "SELECT * FROM rankings WHERE player_id = ? AND season = ? AND week = ? "
-                "ORDER BY scrape_date DESC LIMIT 1",
-                (player_id, season, week),
-            ),
+            "RankingRow | None", self._player_row("rankings", player_id, season, "week = ?", week, "scrape_date")
         )
 
     def latest_rankings_week(self, season: int) -> int | None:
@@ -388,8 +362,8 @@ class Database:
         """Games `team` played (or plays) in weeks after_week+1 .. through_week."""
         return int(
             self._scalar(
-                "SELECT count(*) AS n FROM games WHERE season = ? AND week > ? AND week <= ? "
-                "AND (home_team = ? OR away_team = ?)",
+                "SELECT count(*) AS n FROM games g WHERE season = ? AND week > ? AND week <= ? "
+                f"AND {_PLAYS.format('?')}",
                 (season, after_week, through_week, team, team),
             )
         )
@@ -401,8 +375,7 @@ class Database:
         """
         row = self._one(
             "SELECT count(*) AS weeks, count(g.game_id) AS games FROM roster_weeks r "
-            "LEFT JOIN games g ON g.season = r.season AND g.week = r.week "
-            "AND (g.home_team = r.team OR g.away_team = r.team) "
+            f"LEFT JOIN games g ON g.season = r.season AND g.week = r.week AND {_PLAYS.format('r.team')} "
             "WHERE r.player_id = ? AND r.season = ? AND r.week > ? AND r.week <= ?",
             (player_id, season, after_week, through_week),
         )

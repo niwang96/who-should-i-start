@@ -19,6 +19,8 @@ from dataclasses import dataclass
 
 import polars as pl
 
+from startsit.db import TABLES
+
 BASE_URL = "https://raw.githubusercontent.com/dynastyprocess/data/master/files"
 RANKINGS_URL = f"{BASE_URL}/fp_latest_weekly.csv"
 PLAYER_IDS_URL = f"{BASE_URL}/db_playerids.csv"
@@ -26,27 +28,6 @@ USER_AGENT = "who-should-i-start/0.1 (+https://github.com/niwang96/who-should-i-
 
 SKILL_PAGES = ["qb", "ppr-rb", "ppr-wr", "ppr-te"]
 FLOAT_COLS = {"ecr": "ecr", "sd": "ecr_sd", "best": "ecr_best", "worst": "ecr_worst", "r2p_pts": "proj_ppr"}
-
-RANKINGS_SCHEMA = {
-    "season": pl.Int64,
-    "week": pl.Int64,
-    "scrape_date": pl.String,
-    "fantasypros_id": pl.String,
-    "player_id": pl.String,
-    "player_name": pl.String,
-    "position": pl.String,
-    "team": pl.String,
-    "opponent": pl.String,
-    "ecr": pl.Float64,
-    "ecr_sd": pl.Float64,
-    "ecr_best": pl.Float64,
-    "ecr_worst": pl.Float64,
-    "proj_ppr": pl.Float64,
-    "pos_rank": pl.String,
-    "start_sit_grade": pl.String,
-    "game_status": pl.String,
-    "source_url": pl.String,
-}
 
 
 @dataclass
@@ -100,7 +81,7 @@ def build_rankings(raw: RawRankings, games: pl.DataFrame, season: int) -> pl.Dat
     skill = raw.rankings.filter(pl.col("page").is_in(SKILL_PAGES))
     week = infer_week(skill["player_game_kickoff_ts"], games.filter(pl.col("season") == season))
     if week is None or skill.is_empty():
-        return pl.DataFrame(schema=RANKINGS_SCHEMA)
+        return pl.DataFrame(schema=TABLES["rankings"].polars_schema())
 
     id_map = (
         raw.player_ids.select("fantasypros_id", pl.col("gsis_id").alias("player_id"))

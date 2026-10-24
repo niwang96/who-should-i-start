@@ -12,7 +12,7 @@ from collections.abc import Iterator
 
 import pytest
 
-from startsit.db import TABLES, Database
+from startsit.db import ALL_TABLE_NAMES, Database
 
 PG_URL = os.environ.get("STARTSIT_TEST_DATABASE_URL")
 
@@ -24,7 +24,7 @@ def db(request: pytest.FixtureRequest) -> Iterator[Database]:
     elif PG_URL:
         target = PG_URL
         with Database(PG_URL) as wipe:
-            wipe.execute(f"DROP TABLE IF EXISTS {', '.join(TABLES)}, keys_only")
+            wipe.execute(f"DROP TABLE IF EXISTS {', '.join(ALL_TABLE_NAMES)}, keys_only")
     else:
         pytest.skip("STARTSIT_TEST_DATABASE_URL not set")
     with Database(target) as database:

@@ -1,7 +1,9 @@
+from typing import TypedDict
+
 import polars as pl
 import pytest
 
-from startsit.db import PRIMARY_KEYS
+from startsit.db import TABLES, Table
 from startsit.features import compute_usage_features
 from startsit.ingest import nflverse
 from startsit.ingest.__main__ import run
@@ -288,9 +290,19 @@ def test_upsert_updates_existing_rows(db):
     assert db.query("select team from players") == [{"team": "CHI"}]
 
 
+class KeysOnlyRow(TypedDict):
+    k: str
+
+
 def test_upsert_of_key_only_rows_ignores_duplicates(db, monkeypatch):
     # A table whose columns are all key columns gets DO NOTHING (DO UPDATE SET would be invalid SQL).
     db.execute("CREATE TABLE keys_only (k TEXT PRIMARY KEY)")
-    monkeypatch.setitem(PRIMARY_KEYS, "keys_only", ("k",))
+    monkeypatch.setitem(TABLES, "keys_only", Table("keys_only", KeysOnlyRow, ("k",)))
     assert db.upsert("keys_only", [dict(k="a"), dict(k="a")]) == 2
     assert db.query("select k from keys_only") == [{"k": "a"}]
+
+
+def test_table_ddl_is_generated_from_the_row_type():
+    ddl = TABLES["games"].ddl()
+    assert "game_id TEXT NOT NULL" in ddl and "gameday TEXT," in ddl and "PRIMARY KEY (game_id)" in ddl
+    assert TABLES["usage_features"].polars_schema()["snap_pct_l3"] == pl.Float64

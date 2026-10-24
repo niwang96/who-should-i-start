@@ -10,11 +10,29 @@ from dataclasses import dataclass
 
 import polars as pl
 
+from startsit.db import TABLES
+from startsit.scoring import SCORINGS, column, from_ppr
+
 SKILL_POSITIONS = ["QB", "RB", "WR", "TE"]
+PLAYER_WEEK = ["player_id", "season", "week"]
 
 COUNT_COLS = ["targets", "carries", "receptions"]
 SHARE_COLS = ["target_share", "air_yards_share", "wopr"]
-POINT_COLS = ["fp_std", "fp_half", "fp_ppr", "xfp_std", "xfp_half", "xfp_ppr"]
+
+
+def _regular_season_skill(
+    frame: pl.DataFrame, type_col: str = "game_type", id_col: str | None = "gsis_id"
+) -> pl.DataFrame:
+    """Regular-season rows for QB/RB/WR/TE (with a player id, when `id_col` is given)."""
+    cond = (pl.col(type_col) == "REG") & pl.col("position").is_in(SKILL_POSITIONS)
+    if id_col:
+        cond &= pl.col(id_col).is_not_null()
+    return frame.filter(cond)
+
+
+def _season_week() -> list[pl.Expr]:
+    """season and week as Int64 (sources disagree: Int32, Float64, ...)."""
+    return [pl.col("season").cast(pl.Int64), pl.col("week").cast(pl.Int64)]
 
 
 @dataclass
@@ -52,12 +70,11 @@ def build_player_weeks(raw: RawNflverse) -> pl.DataFrame:
     id_map = raw.players.select("gsis_id", "pfr_id").drop_nulls().unique("pfr_id")
 
     snaps = (
-        raw.snap_counts.filter((pl.col("game_type") == "REG") & pl.col("position").is_in(SKILL_POSITIONS))
+        _regular_season_skill(raw.snap_counts, id_col="pfr_player_id")
         .join(id_map, left_on="pfr_player_id", right_on="pfr_id", how="inner")
         .select(
             pl.col("gsis_id").alias("player_id"),
-            "season",
-            "week",
+            *_season_week(),
             pl.col("team").alias("snap_team"),
             pl.col("opponent").alias("snap_opponent"),
             pl.col("offense_snaps").cast(pl.Int64),
@@ -65,12 +82,9 @@ def build_player_weeks(raw: RawNflverse) -> pl.DataFrame:
         )
     )
 
-    stats = raw.player_stats.filter(
-        (pl.col("season_type") == "REG") & pl.col("position").is_in(SKILL_POSITIONS)
-    ).select(
+    stats = _regular_season_skill(raw.player_stats, type_col="season_type", id_col="player_id").select(
         "player_id",
-        "season",
-        "week",
+        *_season_week(),
         "team",
         pl.col("opponent_team").alias("opponent"),
         *COUNT_COLS,
@@ -79,27 +93,17 @@ def build_player_weeks(raw: RawNflverse) -> pl.DataFrame:
         pl.col("fantasy_points_ppr").alias("fp_ppr"),
     )
 
-    # FF Opportunity's expected points are PPR-scored; derive the other formats by
-    # removing expected receptions.
+    # FF Opportunity's expected points are PPR-scored; other formats remove expected receptions.
+    total_exp, receptions_exp = pl.col("total_fantasy_points_exp"), pl.col("receptions_exp")
     xfp = raw.ff_opportunity.filter(pl.col("player_id").is_not_null()).select(
         "player_id",
-        pl.col("season").cast(pl.Int64),
-        pl.col("week").cast(pl.Int64),
-        pl.col("total_fantasy_points_exp").alias("xfp_ppr"),
-        (pl.col("total_fantasy_points_exp") - pl.col("receptions_exp")).alias("xfp_std"),
-        (pl.col("total_fantasy_points_exp") - 0.5 * pl.col("receptions_exp")).alias("xfp_half"),
+        *_season_week(),
+        *[from_ppr(total_exp, receptions_exp, s).alias(column("xfp", s)) for s in SCORINGS],
     )
 
-    keys = ["player_id", "season", "week"]
     weeks = (
-        stats.with_columns(pl.col("season").cast(pl.Int64), pl.col("week").cast(pl.Int64))
-        .join(
-            snaps.with_columns(pl.col("season").cast(pl.Int64), pl.col("week").cast(pl.Int64)),
-            on=keys,
-            how="full",
-            coalesce=True,
-        )
-        .join(xfp, on=keys, how="left")
+        stats.join(snaps, on=PLAYER_WEEK, how="full", coalesce=True)
+        .join(xfp, on=PLAYER_WEEK, how="left")
         .with_columns(
             pl.coalesce("team", "snap_team").alias("team"),
             pl.coalesce("opponent", "snap_opponent").alias("opponent"),
@@ -107,44 +111,27 @@ def build_player_weeks(raw: RawNflverse) -> pl.DataFrame:
             pl.col("fp_ppr").fill_null(0.0),
         )
         .with_columns(
-            ((pl.col("fp_std") + pl.col("fp_ppr")) / 2).alias("fp_half"),
             *[pl.col(c).fill_null(0) for c in COUNT_COLS],
             *[pl.col(c).fill_null(0.0) for c in SHARE_COLS],
-            *[pl.col(c).fill_null(0.0) for c in ("xfp_std", "xfp_half", "xfp_ppr")],
+            *[pl.col(column("xfp", s)).fill_null(0.0) for s in SCORINGS],
         )
-        .drop("snap_team", "snap_opponent")
+        .with_columns(from_ppr(pl.col("fp_ppr"), pl.col("receptions"), "half").alias("fp_half"))
     )
-    return weeks.select(
-        *keys,
-        "team",
-        "opponent",
-        "offense_snaps",
-        "snap_pct",
-        *COUNT_COLS,
-        *SHARE_COLS,
-        *POINT_COLS,
-    ).sort(keys)
-
-
-def _skill_rosters(raw: RawNflverse) -> pl.DataFrame:
-    return raw.rosters.filter(
-        (pl.col("game_type") == "REG") & pl.col("position").is_in(SKILL_POSITIONS) & pl.col("gsis_id").is_not_null()
-    )
+    return weeks.select(TABLES["player_weeks"].columns).sort(PLAYER_WEEK)
 
 
 def build_roster_weeks(raw: RawNflverse) -> pl.DataFrame:
     """Each player's team and roster status per week (ACT, RES, DEV, CUT, RET, ...)."""
     return (
-        _skill_rosters(raw)
+        _regular_season_skill(raw.rosters)
         .select(
             pl.col("gsis_id").alias("player_id"),
-            pl.col("season").cast(pl.Int64),
-            pl.col("week").cast(pl.Int64),
+            *_season_week(),
             "team",
             "status",
         )
-        .unique(["player_id", "season", "week"], keep="last")
-        .sort("player_id", "season", "week")
+        .unique(PLAYER_WEEK, keep="last")
+        .sort(PLAYER_WEEK)
     )
 
 
@@ -156,7 +143,7 @@ def build_players(raw: RawNflverse, player_weeks: pl.DataFrame) -> pl.DataFrame:
     trades and releases; the team of the last game is only a fallback.
     """
     from_roster = (
-        _skill_rosters(raw)
+        _regular_season_skill(raw.rosters)
         .sort("week")
         .group_by("gsis_id")
         .agg(
@@ -193,20 +180,17 @@ def build_players(raw: RawNflverse, player_weeks: pl.DataFrame) -> pl.DataFrame:
 
 def build_injuries(raw: RawNflverse) -> pl.DataFrame:
     return (
-        raw.injuries.filter(
-            (pl.col("game_type") == "REG") & pl.col("position").is_in(SKILL_POSITIONS) & pl.col("gsis_id").is_not_null()
-        )
+        _regular_season_skill(raw.injuries)
         .select(
             pl.col("gsis_id").alias("player_id"),
-            pl.col("season").cast(pl.Int64),
-            pl.col("week").cast(pl.Int64),
+            *_season_week(),
             "team",
             "report_status",
             "practice_status",
             pl.coalesce("report_primary_injury", "practice_primary_injury").alias("injury"),
         )
-        .unique(["player_id", "season", "week"], keep="last")
-        .sort(["player_id", "season", "week"])
+        .unique(PLAYER_WEEK, keep="last")
+        .sort(PLAYER_WEEK)
     )
 
 
@@ -216,8 +200,7 @@ def build_games(raw: RawNflverse) -> pl.DataFrame:
         raw.schedules.filter(pl.col("game_type") == "REG")
         .select(
             "game_id",
-            pl.col("season").cast(pl.Int64),
-            pl.col("week").cast(pl.Int64),
+            *_season_week(),
             pl.col("gameday").cast(pl.String),
             "home_team",
             "away_team",

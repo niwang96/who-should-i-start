@@ -12,12 +12,8 @@ than WR16?).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, get_args
 
-Scoring = Literal["ppr", "half", "std"]
-SCORINGS: tuple[Scoring, ...] = get_args(Scoring)
-SCORING_LABELS: dict[Scoring, str] = {"ppr": "PPR", "half": "half-PPR", "std": "standard"}
-POINTS_PER_RECEPTION: dict[Scoring, float] = {"ppr": 1.0, "half": 0.5, "std": 0.0}
+from startsit.scoring import Scoring, from_ppr
 
 # Shown to the LLM and users; update it whenever the formula changes.
 DESCRIPTION = "100% FantasyPros consensus"
@@ -70,7 +66,7 @@ def converts(position: str, scoring: Scoring) -> bool:
 
 def convert_ppr(points_ppr: float, exp_receptions: float, scoring: Scoring) -> float:
     """PPR points to `scoring` by removing the per-catch points it doesn't award."""
-    return max(0.0, points_ppr - (1.0 - POINTS_PER_RECEPTION[scoring]) * exp_receptions)
+    return max(0.0, from_ppr(points_ppr, exp_receptions, scoring))
 
 
 def score(inp: BaselineInput, scoring: Scoring) -> BaselineScore:

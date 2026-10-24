@@ -20,8 +20,8 @@ from dataclasses import dataclass, field
 from typing import Literal, NamedTuple, cast
 
 from startsit import baseline
-from startsit.baseline import Scoring
 from startsit.db import Database, InjuryRow, PlayerRow, RankingRow, RosterRow, UsageRow
+from startsit.scoring import LABELS, SCORINGS, Scoring, column, reception_discount
 
 NFLVERSE_URL = "https://github.com/nflverse/nflverse-data"
 
@@ -36,7 +36,7 @@ class Question:
 
     @property
     def label(self) -> str:
-        return baseline.SCORING_LABELS[self.scoring]
+        return LABELS[self.scoring]
 
 
 @dataclass(frozen=True)
@@ -243,7 +243,7 @@ def consensus_facts(ctx: PlayerContext, q: Question) -> list[Fact]:
             text = f"Consensus projection {r['proj_ppr']:.1f} PPR pts (no usage data to convert to {q.label})"
         else:
             converted = baseline.convert_ppr(r["proj_ppr"], exp_rec, q.scoring)
-            per_catch = 1 - baseline.POINTS_PER_RECEPTION[q.scoring]
+            per_catch = reception_discount(q.scoring)
             text = (
                 f"Consensus projection {r['proj_ppr']:.1f} PPR pts, about {converted:.1f} {q.label} "
                 f"(minus {per_catch:g} x {exp_rec:.1f} expected catches/game)"
@@ -266,8 +266,9 @@ def usage_facts(ctx: PlayerContext, q: Question) -> list[Fact]:
         stale = (
             f"; has missed {_plural(ctx.missed_games, 'team game')} since last playing in week {u['last_game_week']}"
         )
-    expected = {"ppr": u["xfp_ppr_l3"], "half": u["xfp_half_l3"], "std": u["xfp_std_l3"]}[q.scoring]
-    actual = {"ppr": u["fp_ppr_l3"], "half": u["fp_half_l3"], "std": u["fp_std_l3"]}[q.scoring]
+    per_format = cast("dict[str, float]", u)  # per-format columns are looked up by computed name
+    expected = per_format[column("xfp", q.scoring, "_l3")]
+    actual = per_format[column("fp", q.scoring, "_l3")]
     return [
         Fact(
             "usage",
@@ -305,8 +306,8 @@ ITEM_BUILDERS: tuple[Callable[[PlayerContext, Question], list[Fact]], ...] = (
 
 
 def build_packet(db: Database, player_ids: list[str], scoring: Scoring, season: int, week: int) -> EvidencePacket:
-    if scoring not in baseline.SCORINGS:
-        raise ValueError(f"scoring must be one of {baseline.SCORINGS}")
+    if scoring not in SCORINGS:
+        raise ValueError(f"scoring must be one of {SCORINGS}")
     if len(set(player_ids)) < 2 or len(set(player_ids)) != len(player_ids):
         raise ValueError("need at least two different players")
     q = Question(season, week, scoring)
@@ -344,7 +345,7 @@ def main() -> None:
     parser.add_argument(
         "players", nargs="+", help='two or more player names, optionally with a team: "Ryan Miller (NE)"'
     )
-    parser.add_argument("--scoring", choices=baseline.SCORINGS, default="ppr")
+    parser.add_argument("--scoring", choices=SCORINGS, default="ppr")
     parser.add_argument("--season", type=int, default=None)
     parser.add_argument("--week", type=int, default=None, help="default: latest week with rankings")
     parser.add_argument("--db", default=None, help="SQLite path or postgres:// URL")

@@ -16,7 +16,10 @@ Tests run against in-memory SQLite, and also against Postgres when
 `STARTSIT_TEST_DATABASE_URL` points at a disposable database (CI starts one).
 
 ## Database
-`startsit.db.Database` is the only module with SQL. It talks to Postgres (Supabase) when given
+`startsit.db.Database` is the only module with SQL. Each table is defined once in `db.py`
+(a TypedDict of its columns plus its key); the CREATE TABLE statement and the polars schemas are
+generated from it, so adding a column is a one-line change. Scoring-format rules (PPR / half /
+standard) live only in `startsit/scoring.py`. It talks to Postgres (Supabase) when given
 a `postgres://` URL or when `DATABASE_URL` is set, and to a local SQLite file otherwise
 (`STARTSIT_DB_PATH`, default `data/startsit.db`).
 
