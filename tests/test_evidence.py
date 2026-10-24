@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 import pytest
 
 from startsit.evidence import (
@@ -241,3 +243,40 @@ def test_find_player_and_current_week(seeded):
 )
 def test_parse_player_arg(arg, expected):
     assert parse_player_arg(arg) == expected
+
+
+def news_fact(player_id, published_at, summary, url_suffix, event="injury", severity="medium"):
+    return dict(
+        item_id=f"RotoWire:{url_suffix}",
+        player_id=player_id,
+        url=f"https://example.com/news/{url_suffix}",
+        source="RotoWire",
+        published_at=published_at,
+        event=event,
+        severity=severity,
+        summary=summary,
+    )
+
+
+def test_news_facts_are_recent_capped_and_cut_off_at_as_of(seeded):
+    seeded.upsert(
+        "news_facts",
+        [
+            news_fact("NACUA", "2026-10-10T12:00:00+00:00", "Too old.", 1),
+            news_fact("NACUA", "2026-10-21T12:00:00+00:00", "Limited Wednesday.", 2, event="practice", severity="low"),
+            news_fact("NACUA", "2026-10-22T12:00:00+00:00", "Limited Thursday.", 3, event="practice", severity="low"),
+            news_fact("NACUA", "2026-10-23T12:00:00+00:00", "Did not practice Friday.", 4, severity="high"),
+            news_fact("NACUA", "2026-10-24T12:00:00+00:00", "Questionable for Sunday.", 5),
+            news_fact("NACUA", "2026-10-26T12:00:00+00:00", "After the question was asked.", 6),
+        ],
+    )
+    as_of = datetime(2026, 10, 25, 0, 0, tzinfo=UTC)
+    p = build_packet(seeded, ["NACUA", "SMITH"], "ppr", 2026, 7, as_of=as_of)
+    news = [i for i in p.players[0].items if i.kind == "news"]
+    assert [i.text for i in news] == [
+        "2026-10-24 RotoWire: Questionable for Sunday. (injury, medium impact)",
+        "2026-10-23 RotoWire: Did not practice Friday. (injury, high impact)",
+        "2026-10-22 RotoWire: Limited Thursday. (practice, low impact)",
+    ]
+    assert news[0].source_url == "https://example.com/news/5"
+    assert not [i for i in p.players[1].items if i.kind == "news"]

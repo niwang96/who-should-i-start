@@ -17,6 +17,7 @@ import sqlite3
 import types
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
 from typing import Any, TypedDict, cast, get_args, get_type_hints
@@ -131,6 +132,45 @@ class RankingRow(TypedDict):
     source_url: str | None
 
 
+def utc_iso(dt: datetime) -> str:
+    """The timestamp format news rows use: ISO 8601 in UTC to the second, so string order is time order."""
+    return dt.astimezone(UTC).isoformat(timespec="seconds")
+
+
+class NewsItemRow(TypedDict):
+    """One headline from an RSS feed: headline, summary and link only (CLAUDE.md: link out, don't copy articles)."""
+
+    item_id: str  # "<source>:<feed guid>", else the link (some feeds reuse one link per player)
+    url: str
+    source: str
+    title: str
+    summary: str | None
+    published_at: str  # ISO 8601, UTC
+    fetched_at: str
+
+
+class NewsExtractionRow(TypedDict):
+    """The L2 cache: one row per news item the LLM has processed, so no item is sent twice."""
+
+    item_id: str
+    model: str
+    extracted_at: str
+    fact_count: int
+
+
+class NewsFactRow(TypedDict):
+    """A structured, player-level fact extracted from one news item."""
+
+    item_id: str
+    player_id: str
+    url: str  # the item's link, for citing the source
+    source: str
+    published_at: str
+    event: str  # see startsit.ingest.news_extract.EVENTS
+    severity: str  # high | medium | low
+    summary: str  # restates only the item's own text
+
+
 # Postgres REAL is single precision, so floats are DOUBLE PRECISION (same meaning in SQLite).
 _SQL_TYPES: dict[type, str] = {str: "TEXT", int: "INTEGER", float: "DOUBLE PRECISION"}
 _POLARS_TYPES: dict[type, type[pl.DataType]] = {str: pl.String, int: pl.Int64, float: pl.Float64}
@@ -178,6 +218,9 @@ TABLES: dict[str, Table] = {
         Table("usage_features", UsageRow, ("player_id", "season", "through_week")),
         Table("games", GameRow, ("game_id",)),
         Table("rankings", RankingRow, ("season", "week", "scrape_date", "fantasypros_id")),
+        Table("news_items", NewsItemRow, ("item_id",)),
+        Table("news_extractions", NewsExtractionRow, ("item_id",)),
+        Table("news_facts", NewsFactRow, ("item_id", "player_id")),
     )
 }
 
@@ -190,8 +233,16 @@ INGEST_RUNS_DDL = """CREATE TABLE IF NOT EXISTS ingest_runs (
     finished_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );"""
 
-SCHEMA = "\n\n".join([*(t.ddl() for t in TABLES.values()), INGEST_RUNS_DDL])
-ALL_TABLE_NAMES = (*TABLES, "ingest_runs")
+# Every LLM request, so daily free-tier budgets can be enforced.
+LLM_CALLS_DDL = """CREATE TABLE IF NOT EXISTS llm_calls (
+    purpose    TEXT NOT NULL,
+    model      TEXT NOT NULL,
+    ok         INTEGER NOT NULL,
+    called_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);"""
+
+SCHEMA = "\n\n".join([*(t.ddl() for t in TABLES.values()), INGEST_RUNS_DDL, LLM_CALLS_DDL])
+ALL_TABLE_NAMES = (*TABLES, "ingest_runs", "llm_calls")
 
 
 # A games row (alias g) involving a team; the placeholder is the team expression.
@@ -295,6 +346,41 @@ class Database:
             "ORDER BY finished_at DESC, source LIMIT ?",
             (limit,),
         )
+
+    def record_llm_call(self, purpose: str, model: str, ok: bool) -> None:
+        self.execute("INSERT INTO llm_calls (purpose, model, ok) VALUES (?, ?, ?)", (purpose, model, int(ok)))
+
+    def llm_calls_since(self, since: str, purpose: str | None = None) -> int:
+        """LLM requests made at or after `since` (UTC, 'YYYY-MM-DD HH:MM:SS'), optionally for one purpose."""
+        purpose_filter, params = (" AND purpose = ?", (since, purpose)) if purpose else ("", (since,))
+        return int(self._scalar(f"SELECT count(*) AS n FROM llm_calls WHERE called_at >= ?{purpose_filter}", params))
+
+    # --- news --------------------------------------------------------------------
+
+    def unextracted_news(self, since: str, limit: int) -> list[NewsItemRow]:
+        """News items published at or after `since` that the LLM hasn't processed yet, newest first."""
+        return cast(
+            "list[NewsItemRow]",
+            self.query(
+                "SELECT i.* FROM news_items i LEFT JOIN news_extractions e ON e.item_id = i.item_id "
+                "WHERE e.item_id IS NULL AND i.published_at >= ? ORDER BY i.published_at DESC LIMIT ?",
+                (since, limit),
+            ),
+        )
+
+    def news_for_player(self, player_id: str, since: str, until: str, limit: int) -> list[NewsFactRow]:
+        """The player's news facts published in [since, until], newest first."""
+        return cast(
+            "list[NewsFactRow]",
+            self.query(
+                "SELECT * FROM news_facts WHERE player_id = ? AND published_at >= ? AND published_at <= ? "
+                "ORDER BY published_at DESC LIMIT ?",
+                (player_id, since, until, limit),
+            ),
+        )
+
+    def all_players(self) -> list[PlayerRow]:
+        return cast("list[PlayerRow]", self.query("SELECT * FROM players"))
 
     # --- players ---------------------------------------------------------------
 

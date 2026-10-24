@@ -1,26 +1,32 @@
-"""Stage 1 ingest job: python -m startsit.ingest [--season 2026] [--db path-or-url]
+"""Stage 1 ingest job: python -m startsit.ingest [--only stats|news] [--season 2026] [--db path-or-url]
 
-Re-ingests the whole season each run (a few thousand rows), so runs are idempotent and
-a missed cron run heals itself on the next one. Rankings are the exception: the source
+stats: re-ingests the whole season each run (a few thousand rows), so runs are idempotent
+and a missed cron run heals itself on the next one. Rankings are the exception: the source
 file only holds the latest scrape, so each run archives the one it sees.
+
+news: stores new RSS items, then extracts player facts from items not yet processed, in
+batched LLM calls within a daily budget. Without GEMINI_API_KEY it stores items only.
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
-from datetime import date
+from datetime import UTC, date, datetime
 
 import polars as pl
 
 from startsit.db import Database
 from startsit.features import compute_usage_features
-from startsit.ingest import nflverse, rankings
+from startsit.ingest import news, news_extract, nflverse, rankings
+from startsit.llm import BudgetedLLM, GeminiProvider, LLMError
 
 log = logging.getLogger("startsit.ingest")
 
 # The source normally refreshes daily; older than this and "current week" answers go stale.
 STALE_RANKINGS_DAYS = 3
+# News gets a slice of the 500/day Gemini free tier; the rest is for start/sit answers.
+NEWS_DAILY_LLM_BUDGET = 40
 
 
 def run(db: Database, raw: nflverse.RawNflverse, season: int) -> dict[str, int]:
@@ -70,6 +76,23 @@ def run_rankings(
     return n
 
 
+def run_news(
+    db: Database, bodies: dict[news.Feed, bytes], llm: BudgetedLLM | None, season: int, now: datetime | None = None
+) -> dict[str, int]:
+    now = now or datetime.now(UTC)
+    items = news.build_news_items(bodies, now)
+    counts = {"news_items": db.upsert("news_items", items)}
+    if llm is None:
+        log.warning("no LLM configured; news items stored but not extracted")
+    else:
+        result = news_extract.extract_news(db, llm, now)
+        counts |= {"news_extracted": result.items_processed, "news_facts": result.facts, "llm_calls": result.calls}
+    for source, n in counts.items():
+        db.record_run(f"news:{source}", season, None, n)
+    log.info("news: %s", counts)
+    return counts
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--season", type=int, default=None, help="defaults to the current NFL season")
@@ -78,6 +101,7 @@ def main() -> None:
         default=None,
         help="SQLite path or postgres:// URL (default: $DATABASE_URL, $STARTSIT_DB_PATH, or data/startsit.db)",
     )
+    parser.add_argument("--only", choices=["stats", "news"], default=None, help="run one part (default: both)")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -86,10 +110,18 @@ def main() -> None:
 
         args.season = nfl.get_current_season()
 
-    raw = nflverse.fetch(args.season)
     with Database(args.db) as db:
-        run(db, raw, args.season)
-        run_rankings(db, rankings.fetch(), nflverse.build_games(raw), args.season)
+        if args.only in (None, "stats"):
+            raw = nflverse.fetch(args.season)
+            run(db, raw, args.season)
+            run_rankings(db, rankings.fetch(), nflverse.build_games(raw), args.season)
+        if args.only in (None, "news"):
+            try:
+                llm: BudgetedLLM | None = BudgetedLLM(GeminiProvider(), db, "news", NEWS_DAILY_LLM_BUDGET)
+            except LLMError as e:
+                log.warning("news extraction disabled: %s", e)
+                llm = None
+            run_news(db, news.fetch_all(), llm, args.season)
 
 
 if __name__ == "__main__":

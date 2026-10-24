@@ -8,6 +8,8 @@ dependencies = [
     "nflreadpy>=0.1.5",
     "polars>=1.0",
     "psycopg[binary]>=3.2",
+    "defusedxml>=0.7",
+    "tzdata>=2024.1",  # time zone data for zoneinfo where the OS has none
 ]
 
 [project.optional-dependencies]
@@ -40,5 +42,5 @@ warn_redundant_casts = true
 no_implicit_optional = true
 
 [[tool.mypy.overrides]]
-module = ["nflreadpy.*"]
+module = ["nflreadpy.*", "defusedxml.*"]
 ignore_missing_imports = true
