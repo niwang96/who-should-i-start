@@ -21,8 +21,8 @@ jobs:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       STARTSIT_DB_PATH: data/startsit.db
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
           cache: pip
