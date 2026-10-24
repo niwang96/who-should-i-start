@@ -1,0 +1,46 @@
+name: ingest
+
+on:
+  schedule:
+    # Daily; nflverse publishes stats/snaps in batches after games, so a daily
+    # full-season refresh picks up each update within a day.
+    - cron: "17 10 * * *"
+  workflow_dispatch:
+    inputs:
+      season:
+        description: "Season to ingest (default: current)"
+        required: false
+
+jobs:
+  nflverse:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      STARTSIT_DB_PATH: data/startsit.db
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -e .
+      - name: Ingest nflverse
+        env:
+          SEASON: ${{ inputs.season }}
+        run: python -m startsit.ingest ${SEASON:+--season "$SEASON"}
+      - name: Summarize
+        run: |
+          python - >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          from startsit.db import Database
+          db = Database()
+          print("| source | season | max week | rows |\n|---|---|---|---|")
+          for r in db.query("select source, season, max_week, row_count from ingest_runs order by rowid desc limit 4"):
+              print(f"| {r['source']} | {r['season']} | {r['max_week']} | {r['row_count']} |")
+          PY
+      # No Supabase project yet: keep the SQLite file as an artifact. Each run is a
+      # full-season refresh, so nothing depends on a previous run's file.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: startsit-db
+          path: data/startsit.db
+          retention-days: 7

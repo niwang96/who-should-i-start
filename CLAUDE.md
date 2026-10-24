@@ -94,10 +94,11 @@ Many users will ask about the same players, so cache per-player results.
 ## Open to-dos
 - [x] Request FantasyPros API key (approved; key pending delivery)
 - [ ] Test what the free FantasyPros key returns (likely `x-api-key` header on `api.fantasypros.com` — confirm from their docs)
-- [ ] Verify `GEMINI_API_KEY` works from the Claude Code cloud env
+- [x] Verify `GEMINI_API_KEY` works from the Claude Code cloud env (Oct 24 2026: `gemini-3.5-flash` OK; `gemini-2.5-flash` returns 404 "no longer available to new users")
 - [ ] Verify RSS feed URLs
 - [ ] Test Reddit `.json` access from the deployed environment
-- [ ] Check nflverse FF Rankings / FF Opportunity contents and update cadence
+- [x] FF Opportunity: 2026 data through the latest week; expected points are PPR-scored (derive half/std via `receptions_exp`)
+- [ ] FF Rankings (`load_ff_rankings`) downloads from `github.com/dynastyprocess/data`, which the Claude Code cloud proxy blocks (403); test from GitHub Actions before relying on it in step 2
 - [ ] Confirm Gemini free-tier limits (provider chosen: Gemini)
 - [ ] Draft evidence packet schema and Stage 3 prompt
 
