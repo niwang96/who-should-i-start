@@ -85,7 +85,7 @@ Many users will ask about the same players, so cache per-player results.
 
 ## Build order
 1. Skeleton + nflverse ingest + usage features + Actions cron
-2. Baseline score + evidence packet (nflverse FF Rankings as primary consensus — the free FantasyPros key caps ECR at 10 rows; add FantasyPros per-player projections as a supplementary signal)
+2. ~~Baseline score + evidence packet~~ (done Oct 24 2026): FF Rankings as the consensus; baseline is 100% consensus for now (decided: add usage weighting only if the evaluation shows it helps; FantasyPros API add-on deferred)
 3. RSS news + cached LLM extraction (L2 cache keyed by URL)
 4. Stage 3 decide call with structured output, validated against packet evidence IDs
 5. Web UI + recommendation logging
@@ -106,9 +106,12 @@ Many users will ask about the same players, so cache per-player results.
 - [ ] Verify RSS feed URLs
 - [ ] Test Reddit `.json` access from the deployed environment
 - [x] FF Opportunity: 2026 data through the latest week; expected points are PPR-scored (derive half/std via `receptions_exp`)
-- [x] FF Rankings weekly (`fp_latest_weekly.csv`, Oct 24 2026): `load_ff_rankings('week')` 403s here because the proxy blocks `github.com/.../raw/...`, but the same file loads from `https://raw.githubusercontent.com/dynastyprocess/data/master/files/fp_latest_weekly.csv`. It's a scrape of FantasyPros' full weekly ECR for **every** ranked player (1006 rows, `scrape_date` 2026-10-23), with `ecr`, `sd`, `best`, `worst`, `pos_rank`, `start_sit_grade`, `r2p_pts`, opponent and game status. Pages: `qb`, `ppr-rb`, `ppr-wr`, `ppr-te`, `k`, `dst` (+ IDP). **PPR only** for skill positions, so no half/std ECR. Keyed by `fantasypros_id` (same as the API `player_id`). It's FantasyPros data, so cite FantasyPros. Still to check: update cadence across the week, and whether Actions can use `load_ff_rankings` directly.
+- [x] FF Rankings weekly (`fp_latest_weekly.csv`, Oct 24 2026): `load_ff_rankings('week')` 403s here because the proxy blocks `github.com/.../raw/...`, but the same file loads from `https://raw.githubusercontent.com/dynastyprocess/data/master/files/fp_latest_weekly.csv`. It's a scrape of FantasyPros' full weekly ECR for **every** ranked player (1006 rows, `scrape_date` 2026-10-23), with `ecr`, `sd`, `best`, `worst`, `pos_rank`, `start_sit_grade`, `r2p_pts`, opponent and game status. Pages: `qb`, `ppr-rb`, `ppr-wr`, `ppr-te`, `k`, `dst` (+ IDP). **PPR only** for skill positions, so no half/std ECR. Keyed by `fantasypros_id` (same as the API `player_id`). It's FantasyPros data, so cite FantasyPros. Ingested by `startsit.ingest.rankings` (archived per `scrape_date`; week inferred from kickoff dates vs. the schedule, since the file has no week column). Still to check: update cadence across the week.
+- [ ] nflverse injuries lag: on Oct 24 (Sat) week 7 rows had practice status but no game status yet (e.g., Puka Nacua "Limited" in nflverse while the FantasyPros API showed Friday DNP + Questionable). Status zeroing in the baseline only fires once nflverse posts "Out". Consider the FantasyPros `/injuries` endpoint (top 10 only) or RSS news (step 3) for fresher status.
+- [ ] Deferred FantasyPros API add-on: per-player projections in all three formats (fills the PPR-only ECR gap) + `compare-players` expert head-to-head; needs a call budget under the ~75-call quota.
 - [ ] Confirm Gemini free-tier limits (provider chosen: Gemini)
-- [ ] Draft evidence packet schema and Stage 3 prompt
+- [x] Draft evidence packet schema (`startsit.evidence`: numbered items E1..En with kind/text/source_url; `to_text()` is what the LLM sees)
+- [ ] Draft Stage 3 prompt
 
 ## Timing
 The NFL regular season runs through early January. Shipping an MVP within ~2–3 weeks leaves time to collect real usage and several weeks of evaluation data.

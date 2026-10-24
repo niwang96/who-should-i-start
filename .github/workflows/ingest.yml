@@ -3,7 +3,8 @@ name: ingest
 on:
   schedule:
     # Daily; nflverse publishes stats/snaps in batches after games, so a daily
-    # full-season refresh picks up each update within a day.
+    # full-season refresh picks up each update within a day. Each run also archives
+    # that day's FantasyPros weekly rankings scrape.
     - cron: "17 10 * * *"
   workflow_dispatch:
     inputs:
@@ -12,7 +13,7 @@ on:
         required: false
 
 jobs:
-  nflverse:
+  ingest:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -24,7 +25,7 @@ jobs:
           python-version: "3.13"
           cache: pip
       - run: pip install -e .
-      - name: Ingest nflverse
+      - name: Ingest nflverse + rankings
         env:
           SEASON: ${{ inputs.season }}
         run: python -m startsit.ingest ${SEASON:+--season "$SEASON"}
@@ -34,7 +35,7 @@ jobs:
           from startsit.db import Database
           db = Database()
           print("| source | season | max week | rows |\n|---|---|---|---|")
-          for r in db.query("select source, season, max_week, row_count from ingest_runs order by rowid desc limit 4"):
+          for r in db.query("select source, season, max_week, row_count from ingest_runs order by rowid desc limit 6"):
               print(f"| {r['source']} | {r['season']} | {r['max_week']} | {r['row_count']} |")
           PY
       # No Supabase project yet: keep the SQLite file as an artifact. Each run is a

@@ -1,4 +1,4 @@
-"""nflverse ingest: weekly usage, fantasy points, expected points, injury reports.
+"""nflverse ingest: weekly usage, fantasy points, expected points, injury reports, schedule.
 
 Fetching is kept separate from the transforms so the transforms can be tested with
 small hand-built frames and no network.
@@ -24,6 +24,7 @@ class RawNflverse:
     ff_opportunity: pl.DataFrame
     injuries: pl.DataFrame
     players: pl.DataFrame
+    schedules: pl.DataFrame
 
 
 def fetch(season: int) -> RawNflverse:
@@ -35,6 +36,7 @@ def fetch(season: int) -> RawNflverse:
         ff_opportunity=nfl.load_ff_opportunity([season]),
         injuries=nfl.load_injuries([season]),
         players=nfl.load_players(),
+        schedules=nfl.load_schedules([season]),
     )
 
 
@@ -167,4 +169,20 @@ def build_injuries(raw: RawNflverse) -> pl.DataFrame:
         )
         .unique(["player_id", "season", "week"], keep="last")
         .sort(["player_id", "season", "week"])
+    )
+
+
+def build_games(raw: RawNflverse) -> pl.DataFrame:
+    """Regular-season games; also how byes are detected (a team with no game that week)."""
+    return (
+        raw.schedules.filter(pl.col("game_type") == "REG")
+        .select(
+            "game_id",
+            pl.col("season").cast(pl.Int64),
+            pl.col("week").cast(pl.Int64),
+            pl.col("gameday").cast(pl.String),
+            "home_team",
+            "away_team",
+        )
+        .sort("game_id")
     )

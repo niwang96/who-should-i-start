@@ -78,6 +78,38 @@ CREATE TABLE IF NOT EXISTS usage_features (
     PRIMARY KEY (player_id, season, through_week)
 );
 
+CREATE TABLE IF NOT EXISTS games (
+    game_id    TEXT PRIMARY KEY,
+    season     INTEGER NOT NULL,
+    week       INTEGER NOT NULL,
+    gameday    TEXT,
+    home_team  TEXT NOT NULL,
+    away_team  TEXT NOT NULL
+);
+
+-- FantasyPros weekly ECR, one archived copy per scrape (see startsit.ingest.rankings).
+CREATE TABLE IF NOT EXISTS rankings (
+    season           INTEGER NOT NULL,
+    week             INTEGER NOT NULL,
+    scrape_date      TEXT NOT NULL,
+    fantasypros_id   TEXT NOT NULL,
+    player_id        TEXT,  -- GSIS id; null for the few players the id map lacks
+    player_name      TEXT NOT NULL,
+    position         TEXT NOT NULL,
+    team             TEXT,  -- FantasyPros abbreviations (LAR, not nflverse's LA)
+    opponent         TEXT,  -- e.g. "vs. DAL", "at LV"
+    ecr              REAL,  -- average expert rank within position
+    ecr_sd           REAL,
+    ecr_best         REAL,
+    ecr_worst        REAL,
+    proj_ppr         REAL,  -- FantasyPros rank-to-points, PPR scoring
+    pos_rank         TEXT,
+    start_sit_grade  TEXT,
+    game_status      TEXT,
+    source_url       TEXT,
+    PRIMARY KEY (season, week, scrape_date, fantasypros_id)
+);
+
 CREATE TABLE IF NOT EXISTS ingest_runs (
     source       TEXT NOT NULL,
     season       INTEGER NOT NULL,
@@ -92,6 +124,8 @@ PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
     "player_weeks": ("player_id", "season", "week"),
     "injuries": ("player_id", "season", "week"),
     "usage_features": ("player_id", "season", "through_week"),
+    "games": ("game_id",),
+    "rankings": ("season", "week", "scrape_date", "fantasypros_id"),
 }
 
 

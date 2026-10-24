@@ -16,7 +16,7 @@ def stat_row(player_id, week, position="WR", season_type="REG", **kw):
     return row | kw
 
 
-def make_raw(stats=(), snaps=(), opp=(), injuries=()):
+def make_raw(stats=(), snaps=(), opp=(), injuries=(), games=()):
     players = pl.DataFrame(
         dict(
             gsis_id=["G1", "G2", "G3"], pfr_id=["P1", "P2", None], display_name=["Wide Out", "Snap Only", "Lineman"],
@@ -36,13 +36,23 @@ def make_raw(stats=(), snaps=(), opp=(), injuries=()):
         report_status=pl.String, practice_status=pl.String,
         report_primary_injury=pl.String, practice_primary_injury=pl.String,
     )
+    games_schema = dict(
+        game_id=pl.String, season=pl.Int64, game_type=pl.String, week=pl.Int64, gameday=pl.String,
+        home_team=pl.String, away_team=pl.String,
+    )
     return nflverse.RawNflverse(
         player_stats=pl.DataFrame(list(stats)) if stats else pl.DataFrame([stat_row("G1", 1)]).clear(),
         snap_counts=pl.DataFrame(list(snaps), schema=snap_schema),
         ff_opportunity=pl.DataFrame(list(opp), schema=opp_schema),
         injuries=pl.DataFrame(list(injuries), schema=inj_schema),
         players=players,
+        schedules=pl.DataFrame(list(games), schema=games_schema),
     )
+
+
+def game(week, home, away, gameday=None, game_type="REG"):
+    return dict(game_id=f"2026_{week:02d}_{away}_{home}", season=2026, game_type=game_type, week=week,
+                gameday=gameday or f"2026-09-{week + 9:02d}", home_team=home, away_team=away)
 
 
 def snap(pfr, week, pct, position="WR", game_type="REG"):
@@ -120,14 +130,15 @@ def test_run_is_idempotent():
         injuries=[dict(gsis_id="G1", season=2026, week=2, game_type="REG", position="WR", team="DET",
                        report_status="Questionable", practice_status="Limited Participation in Practice",
                        report_primary_injury="Hamstring", practice_primary_injury="Hamstring")],
+        games=[game(1, "DET", "GB"), game(2, "CHI", "DET"), dict(game(22, "DET", "KC"), game_type="POST")],
     )
     db = Database(":memory:")
     first = run(db, raw, 2026)
     second = run(db, raw, 2026)
-    assert first == second == {"players": 1, "player_weeks": 2, "injuries": 1, "usage_features": 2}
+    assert first == second == {"players": 1, "player_weeks": 2, "injuries": 1, "usage_features": 2, "games": 2}
     assert db.query("select count(*) n from player_weeks")[0]["n"] == 2
     assert db.query("select injury from injuries")[0]["injury"] == "Hamstring"
-    assert db.query("select count(*) n from ingest_runs")[0]["n"] == 8
+    assert db.query("select count(*) n from ingest_runs")[0]["n"] == 10
 
 
 def test_upsert_updates_existing_rows():
