@@ -71,18 +71,34 @@ Follow the two-level pattern from the reference repo:
 - **L2:** permanent per-item LLM extraction cache keyed by source URL.
 Many users will ask about the same players, so cache per-player results.
 
-## Free-tier stack candidates (confirm current limits before committing)
-- **LLM:** Gemini API free tier, Groq, or free models on OpenRouter. Use a provider abstraction so the model can be swapped.
-- **Hosting:** Vercel or Cloudflare (Pages/Workers).
-- **DB/auth:** Supabase (Postgres; pgvector if needed).
-- **Scheduled jobs:** GitHub Actions cron.
+## Stack (decided)
+- **Language:** Python everywhere (author is primarily a Java dev; Python chosen for the nflverse/LLM ecosystem and resume range).
+- **Ingest:** Python jobs (`nflreadpy`) run by GitHub Actions cron, writing to Supabase.
+- **Web app:** FastAPI on Vercel's free Python functions; simple HTMX/Jinja frontend (no JS framework for MVP).
+- **DB:** Supabase (Postgres). Until a project exists, use local SQLite behind the same data-access layer.
+- **LLM:** Gemini free tier, behind a provider interface so the model can be swapped. Unit tests use a fake provider and never call a real LLM.
+
+## Secrets
+- Read keys only from environment variables: `GEMINI_API_KEY`, `FANTASYPROS_API_KEY`. Never commit them, print them, or log them; keep `.env` gitignored and provide `.env.example`.
+- Claude Code cloud env: keys are plain env vars (the network-secret types — Bearer/Body param/Basic/SigV4/GCP token — don't fit Gemini's `x-goog-api-key` header). The Gemini key there is a dev-only key with billing off.
+- GitHub Actions: repository secrets. Vercel: project environment variables.
+
+## Build order
+1. Skeleton + nflverse ingest + usage features + Actions cron
+2. Baseline score + evidence packet (nflverse FF Rankings as consensus fallback until FantasyPros key arrives)
+3. RSS news + cached LLM extraction (L2 cache keyed by URL)
+4. Stage 3 decide call with structured output, validated against packet evidence IDs
+5. Web UI + recommendation logging
+6. Weekly evaluation, then Reddit as an optional signal
 
 ## Open to-dos
-- [ ] Request FantasyPros API key (approval may take time) and test what a free key returns
+- [x] Request FantasyPros API key (approved; key pending delivery)
+- [ ] Test what the free FantasyPros key returns (likely `x-api-key` header on `api.fantasypros.com` — confirm from their docs)
+- [ ] Verify `GEMINI_API_KEY` works from the Claude Code cloud env
 - [ ] Verify RSS feed URLs
 - [ ] Test Reddit `.json` access from the deployed environment
 - [ ] Check nflverse FF Rankings / FF Opportunity contents and update cadence
-- [ ] Choose LLM provider and confirm free-tier limits
+- [ ] Confirm Gemini free-tier limits (provider chosen: Gemini)
 - [ ] Draft evidence packet schema and Stage 3 prompt
 
 ## Timing
