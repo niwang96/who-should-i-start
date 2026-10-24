@@ -77,7 +77,7 @@ Many users will ask about the same players, so cache per-player results.
 - **Web app:** FastAPI on Vercel's free Python functions; simple HTMX/Jinja frontend (no JS framework for MVP).
 - **DB:** Supabase (Postgres) via `DATABASE_URL` (session pooler URI; the direct connection is IPv6-only, which Actions/Vercel can't reach; the Claude Code cloud env can't reach Postgres at all). Local SQLite when unset. All SQL lives in `startsit/db.py` and is written once for both backends; tests run on both.
 - **Code quality:** ruff (lint + format) and mypy run in CI alongside pytest.
-- **LLM:** Gemini free tier, behind a provider interface so the model can be swapped. Unit tests use a fake provider and never call a real LLM.
+- **LLM:** Gemini free tier, model **`gemini-3.5-flash-lite`** (decided Oct 24 2026; 500 requests/day vs 20 for `gemini-3.5-flash`). Read the model id from `GEMINI_MODEL` (default `gemini-3.5-flash-lite`) behind a provider interface so it can be swapped. Newer Flash versions listed on the key (3.6/3.7/3.8) aren't usable for this project. Unit tests use a fake provider and never call a real LLM.
 
 ## Secrets
 - Read keys only from environment variables: `GEMINI_API_KEY`, `FANTASYPROS_API_KEY`. Never commit them, print them, or log them; keep `.env` gitignored and provide `.env.example`.
@@ -110,10 +110,11 @@ Many users will ask about the same players, so cache per-player results.
 - [x] FF Rankings weekly (`fp_latest_weekly.csv`, Oct 24 2026): `load_ff_rankings('week')` 403s here because the proxy blocks `github.com/.../raw/...`, but the same file loads from `https://raw.githubusercontent.com/dynastyprocess/data/master/files/fp_latest_weekly.csv`. It's a scrape of FantasyPros' full weekly ECR for **every** ranked player (1006 rows, `scrape_date` 2026-10-23), with `ecr`, `sd`, `best`, `worst`, `pos_rank`, `start_sit_grade`, `r2p_pts`, opponent and game status. Pages: `qb`, `ppr-rb`, `ppr-wr`, `ppr-te`, `k`, `dst` (+ IDP). **PPR only** for skill positions, so no half/std ECR. Keyed by `fantasypros_id` (same as the API `player_id`). It's FantasyPros data, so cite FantasyPros. Ingested by `startsit.ingest.rankings` (archived per `scrape_date`; week inferred from kickoff dates vs. the schedule, since the file has no week column). Still to check: update cadence across the week.
 - [ ] nflverse injuries lag: on Oct 24 (Sat) week 7 rows had practice status but no game status yet (e.g., Puka Nacua "Limited" in nflverse while the FantasyPros API showed Friday DNP + Questionable). Status zeroing in the baseline only fires once nflverse posts "Out". Consider the FantasyPros `/injuries` endpoint (top 10 only) or RSS news (step 3) for fresher status.
 - [ ] Deferred FantasyPros API add-on: per-player projections in all three formats (fills the PPR-only ECR gap) + `compare-players` expert head-to-head; needs a call budget under the ~75-call quota.
-- [x] Gemini free-tier limits (author's AI Studio, Oct 24 2026): **1 request/minute, 20 requests/day**, 250k input tokens/minute. Requests, not tokens, are the constraint: 20/day can't cover one LLM call per news item or per user question. Design implications:
-  - Step 3: batch news extraction: one call carries all new headlines (fits easily in 250k tokens), so ingest uses ~1–3 calls/day.
-  - Step 4: cache decisions per (players, scoring, week) and fall back to the code baseline with a clear "LLM quota reached" note when the daily budget is spent.
-  - Still to check: whether a lighter model (e.g. a flash-lite variant) on the same key has higher limits; the provider interface allows using a different model for extraction than for decisions.
+- [x] Gemini free-tier limits (author's AI Studio, Oct 24 2026), per model:
+  - `gemini-3.5-flash-lite` (**chosen**): 15 requests/minute, 500 requests/day, 250k input tokens/minute.
+  - `gemini-3.5-flash`: 1 request/minute, 20 requests/day, 250k input tokens/minute; too few requests for real users.
+  - Requests, not tokens, are the constraint. Step 3: batch news extraction (one call carries all new headlines), so ingest uses ~1–5 calls/day. Step 4: cache decisions per (players, scoring, week); when the daily budget is spent, fall back to the code baseline with a clear "daily AI limit reached" note.
+  - Step 4 check: run ~10 matchups through both Lite and Flash (~20 requests) and compare reasoning quality before finalizing the decision prompt.
 - [x] Draft evidence packet schema (`startsit.evidence`: numbered items E1..En with kind/text/source_url; `to_text()` is what the LLM sees)
 - [ ] Draft Stage 3 prompt
 - Decided Oct 24 2026: the baseline zeroes every player whose weekly roster status isn't Active (reserve/IR, practice squad, exempt, inactive, released, retired), not just cut/retired. nflverse can lag an activation by a day or two; the packet's roster-status item shows the LLM why.
