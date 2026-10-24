@@ -37,14 +37,36 @@ def test_gemini_sends_schema_and_parses_json(monkeypatch):
     assert sent["body"]["systemInstruction"] == {"parts": [{"text": "rules"}]}
 
 
-@pytest.mark.parametrize("code,error", [(429, QuotaExceeded), (500, LLMError)])
-def test_gemini_maps_http_errors(monkeypatch, code, error):
+@pytest.mark.parametrize("code,error,attempts", [(429, QuotaExceeded, 1), (503, LLMError, 2), (400, LLMError, 1)])
+def test_gemini_maps_http_errors_and_retries_overload_once(monkeypatch, code, error, attempts):
+    calls = []
+
     def fail(req, timeout):
+        calls.append(1)
         raise urllib.error.HTTPError(req.full_url, code, "err", {}, io.BytesIO(b'{"error": "nope"}'))
 
     monkeypatch.setattr(llm.urllib.request, "urlopen", fail)
+    monkeypatch.setattr(GeminiProvider, "RETRY_DELAY_SECONDS", 0)
     with pytest.raises(error):
         GeminiProvider(api_key="k").generate_json("p", {})
+    assert len(calls) == attempts
+
+
+def test_gemini_recovers_when_the_retry_succeeds(monkeypatch):
+    responses = [
+        urllib.error.HTTPError("u", 503, "busy", {}, io.BytesIO(b"busy")),
+        FakeResponse(gemini_body({"ok": 1})),
+    ]
+
+    def flaky(req, timeout):
+        r = responses.pop(0)
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+    monkeypatch.setattr(llm.urllib.request, "urlopen", flaky)
+    monkeypatch.setattr(GeminiProvider, "RETRY_DELAY_SECONDS", 0)
+    assert GeminiProvider(api_key="k").generate_json("p", {}) == {"ok": 1}
 
 
 def test_gemini_rejects_a_malformed_response(monkeypatch):

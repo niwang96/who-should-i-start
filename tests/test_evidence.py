@@ -62,9 +62,16 @@ def ranking(player_id, proj_ppr, scrape_date="2026-10-23", **kw):
     return row | kw
 
 
-def game(week, home, away):
+def game(week, home, away, spread_line=None, total_line=None):
     return dict(
-        game_id=f"2026_{week:02d}_{away}_{home}", season=2026, week=week, gameday=None, home_team=home, away_team=away
+        game_id=f"2026_{week:02d}_{away}_{home}",
+        season=2026,
+        week=week,
+        gameday=None,
+        home_team=home,
+        away_team=away,
+        spread_line=spread_line,
+        total_line=total_line,
     )
 
 
@@ -280,3 +287,19 @@ def test_news_facts_are_recent_capped_and_cut_off_at_as_of(seeded):
     ]
     assert news[0].source_url == "https://example.com/news/5"
     assert not [i for i in p.players[1].items if i.kind == "news"]
+
+
+def test_matchup_fact_uses_betting_lines_from_each_teams_side(seeded):
+    # PHI hosts DAL, favored by 3.5 (total 49.5); LA plays at LV, a 2.5-point underdog (total 44).
+    seeded.upsert("games", [game(7, "PHI", "DAL", 3.5, 49.5), game(7, "LV", "LA", 2.5, 44.0)])
+    p = build_packet(seeded, ["SMITH", "NACUA"], "ppr", 2026, 7)
+    matchups = {pl.name: [i.text for i in pl.items if i.kind == "matchup"] for pl in p.players}
+    assert matchups == {
+        "DeVonta Smith": ["PHI vs DAL: betting lines imply 26.5 team points (favored by 3.5, game total 49.5)"],
+        "Puka Nacua": ["LA at LV: betting lines imply 20.8 team points (underdog by 2.5, game total 44)"],
+    }
+
+
+def test_no_matchup_fact_without_lines(seeded):
+    p = build_packet(seeded, ["SMITH", "NACUA"], "ppr", 2026, 7)
+    assert not [i for pl in p.players for i in pl.items if i.kind == "matchup"]

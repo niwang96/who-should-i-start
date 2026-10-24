@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -40,12 +41,32 @@ class LLMProvider(Protocol):
 
 
 class GeminiProvider:
+    # Gemini answers "model overloaded" (503) during demand spikes; one short retry usually works.
+    RETRY_STATUSES = (500, 502, 503, 504)
+    RETRY_DELAY_SECONDS = 2.0
+
     def __init__(self, api_key: str | None = None, model: str | None = None, timeout: float = 60):
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY") or ""
         if not self.api_key:
             raise LLMError("GEMINI_API_KEY is not set")
         self.model = model or os.environ.get("GEMINI_MODEL") or DEFAULT_MODEL
         self.timeout = timeout
+
+    def _post(self, req: urllib.request.Request, retries: int) -> Any:
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                return json.load(resp)
+        except urllib.error.HTTPError as e:
+            # The error body can be long; keep a short excerpt. It never contains the key.
+            detail = e.read()[:300].decode(errors="replace")
+            if e.code in self.RETRY_STATUSES and retries > 0:
+                time.sleep(self.RETRY_DELAY_SECONDS)
+                return self._post(req, retries - 1)
+            if e.code == 429:
+                raise QuotaExceeded(f"Gemini rate limit: {detail}") from e
+            raise LLMError(f"Gemini HTTP {e.code}: {detail}") from e
+        except (urllib.error.URLError, TimeoutError) as e:
+            raise LLMError(f"Gemini request failed: {e}") from e
 
     def generate_json(self, prompt: str, schema: dict[str, Any], system: str | None = None) -> Any:
         body: dict[str, Any] = {
@@ -59,17 +80,7 @@ class GeminiProvider:
             data=json.dumps(body).encode(),
             headers={"x-goog-api-key": self.api_key, "Content-Type": "application/json"},
         )
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                data = json.load(resp)
-        except urllib.error.HTTPError as e:
-            # The error body can be long; keep a short excerpt. It never contains the key.
-            detail = e.read()[:300].decode(errors="replace")
-            if e.code == 429:
-                raise QuotaExceeded(f"Gemini rate limit: {detail}") from e
-            raise LLMError(f"Gemini HTTP {e.code}: {detail}") from e
-        except (urllib.error.URLError, TimeoutError) as e:
-            raise LLMError(f"Gemini request failed: {e}") from e
+        data = self._post(req, retries=1)
         try:
             text = data["candidates"][0]["content"]["parts"][0]["text"]
             return json.loads(text)

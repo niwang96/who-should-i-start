@@ -59,6 +59,9 @@ def fetch(feed: Feed, timeout: float = 30) -> bytes:
     req = urllib.request.Request(feed.url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         body: bytes = resp.read()
+    if not body.strip():
+        # ESPN answers GitHub Actions (datacenter IPs) with an empty 200 response.
+        raise ValueError(f"empty response (HTTP {resp.status})")
     return body
 
 

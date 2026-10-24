@@ -21,12 +21,12 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal, NamedTuple, cast
 
 from startsit import baseline
-from startsit.db import Database, InjuryRow, NewsFactRow, PlayerRow, RankingRow, RosterRow, UsageRow, utc_iso
+from startsit.db import Database, GameRow, InjuryRow, NewsFactRow, PlayerRow, RankingRow, RosterRow, UsageRow, utc_iso
 from startsit.scoring import LABELS, SCORINGS, Scoring, column, reception_discount
 
 NFLVERSE_URL = "https://github.com/nflverse/nflverse-data"
 
-EvidenceKind = Literal["availability", "consensus", "projection", "usage", "injury", "news"]
+EvidenceKind = Literal["availability", "consensus", "projection", "matchup", "usage", "injury", "news"]
 
 NEWS_LOOKBACK = timedelta(days=7)
 NEWS_PER_PLAYER = 3
@@ -55,6 +55,7 @@ class PlayerContext:
     usage: UsageRow | None
     injury: InjuryRow | None
     news: list[NewsFactRow]  # newest first
+    game: GameRow | None  # the team's game this week, with betting lines
     on_bye: bool
     missed_games: int  # games the player's team played since the player last played (0 if unknown)
 
@@ -177,6 +178,7 @@ def load_context(db: Database, player_id: str, q: Question) -> PlayerContext:
         ranking=db.latest_ranking(player_id, q.season, q.week),
         usage=usage,
         injury=db.injury(player_id, q.season, q.week),
+        game=db.team_game(q.season, q.week, team) if team else None,
         news=db.news_for_player(player_id, utc_iso(q.as_of - NEWS_LOOKBACK), utc_iso(q.as_of), NEWS_PER_PLAYER),
         on_bye=on_bye,
         missed_games=missed,
@@ -259,6 +261,35 @@ def consensus_facts(ctx: PlayerContext, q: Question) -> list[Fact]:
     return facts
 
 
+def implied_points(game: GameRow, team: str) -> float | None:
+    """The team's implied points from the betting lines: half the total, plus half the spread."""
+    if game["spread_line"] is None or game["total_line"] is None:
+        return None
+    spread = game["spread_line"] if team == game["home_team"] else -game["spread_line"]
+    return (game["total_line"] + spread) / 2
+
+
+def matchup_facts(ctx: PlayerContext, q: Question) -> list[Fact]:
+    g, team = ctx.game, ctx.team
+    if g is None or team is None:
+        return []
+    implied = implied_points(g, team)
+    if implied is None:
+        return []
+    home = team == g["home_team"]
+    opponent = g["away_team"] if home else g["home_team"]
+    spread = (g["spread_line"] or 0.0) * (1 if home else -1)
+    edge = f"favored by {spread:g}" if spread > 0 else f"underdog by {-spread:g}" if spread < 0 else "pick'em"
+    return [
+        Fact(
+            "matchup",
+            f"{team} {'vs' if home else 'at'} {opponent}: betting lines imply {implied:.1f} team points "
+            f"({edge}, game total {g['total_line']:g})",
+            NFLVERSE_URL,
+        )
+    ]
+
+
 def usage_facts(ctx: PlayerContext, q: Question) -> list[Fact]:
     u = ctx.usage
     if u is None:
@@ -315,6 +346,7 @@ def news_facts(ctx: PlayerContext, q: Question) -> list[Fact]:
 ITEM_BUILDERS: tuple[Callable[[PlayerContext, Question], list[Fact]], ...] = (
     availability_facts,
     consensus_facts,
+    matchup_facts,
     usage_facts,
     injury_facts,
     news_facts,
@@ -367,8 +399,21 @@ def parse_player_arg(arg: str) -> tuple[str, str | None]:
     return (m["name"], m["team"].upper()) if m else (arg.strip(), None)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Print the evidence packet for a start/sit question.")
+def packet_for_names(
+    db: Database, names: list[str], scoring: Scoring, season: int | None = None, week: int | None = None
+) -> EvidencePacket:
+    """Resolve player names (optionally "Name (TEAM)") and default season/week, then build the packet."""
+    season = season or db.latest_season()
+    if season is None:
+        raise ValueError("no data yet; run python -m startsit.ingest first")
+    week = week or current_week(db, season)
+    ids = [find_player(db, *parse_player_arg(name))["player_id"] for name in names]
+    return build_packet(db, ids, scoring, season, week)
+
+
+def question_parser(description: str) -> argparse.ArgumentParser:
+    """The command-line arguments shared by the evidence and decide tools."""
+    parser = argparse.ArgumentParser(description=description)
     parser.add_argument(
         "players", nargs="+", help='two or more player names, optionally with a team: "Ryan Miller (NE)"'
     )
@@ -376,18 +421,18 @@ def main() -> None:
     parser.add_argument("--season", type=int, default=None)
     parser.add_argument("--week", type=int, default=None, help="default: latest week with rankings")
     parser.add_argument("--db", default=None, help="SQLite path or postgres:// URL")
-    args = parser.parse_args()
+    return parser
 
+
+def main() -> None:
+    parser = question_parser("Print the evidence packet for a start/sit question.")
+    args = parser.parse_args()
     with Database(args.db) as db:
         try:
-            season = args.season or db.latest_season()
-            if season is None:
-                parser.exit(1, "error: no data yet; run python -m startsit.ingest first\n")
-            week = args.week or current_week(db, season)
-            ids = [find_player(db, *parse_player_arg(a))["player_id"] for a in args.players]
-            print(build_packet(db, ids, cast(Scoring, args.scoring), season, week).to_text())
+            packet = packet_for_names(db, args.players, cast(Scoring, args.scoring), args.season, args.week)
         except (PlayerLookupError, ValueError) as e:
             parser.exit(1, f"error: {e}\n")
+        print(packet.to_text())
 
 
 if __name__ == "__main__":

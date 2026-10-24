@@ -1,10 +1,11 @@
+import sqlite3
 from datetime import UTC, datetime
 from typing import TypedDict
 
 import polars as pl
 import pytest
 
-from startsit.db import TABLES, Table
+from startsit.db import TABLES, Database, Table
 from startsit.features import compute_usage_features
 from startsit.ingest import news, nflverse
 from startsit.ingest.__main__ import run, run_news
@@ -91,6 +92,8 @@ def make_raw(stats=(), snaps=(), opp=(), injuries=(), games=(), rosters=()):
         gameday=pl.String,
         home_team=pl.String,
         away_team=pl.String,
+        spread_line=pl.Float64,
+        total_line=pl.Float64,
     )
     return nflverse.RawNflverse(
         player_stats=pl.DataFrame(list(stats)) if stats else pl.DataFrame([stat_row("G1", 1)]).clear(),
@@ -112,6 +115,8 @@ def game(week, home, away, gameday=None, game_type="REG"):
         gameday=gameday or f"2026-09-{week + 9:02d}",
         home_team=home,
         away_team=away,
+        spread_line=2.5,
+        total_line=47.5,
     )
 
 
@@ -332,3 +337,33 @@ def test_run_news_stores_items_and_extracts_facts(db):
     assert db.query("select player_id, summary from news_facts") == [{"player_id": "NACUA", "summary": "Q."}]
     # Without an LLM the items are still stored.
     assert run_news(db, bodies, None, 2026, now) == {"news_items": 1}
+
+
+def test_new_columns_are_added_to_an_existing_table(tmp_path):
+    path = tmp_path / "old.db"
+    old = sqlite3.connect(path)  # a games table from before betting lines existed
+    old.execute(
+        "CREATE TABLE games (game_id TEXT PRIMARY KEY, season INTEGER NOT NULL, week INTEGER NOT NULL, "
+        "gameday TEXT, home_team TEXT NOT NULL, away_team TEXT NOT NULL)"
+    )
+    old.execute("INSERT INTO games VALUES ('g1', 2026, 7, NULL, 'PHI', 'DAL')")
+    old.commit()
+    old.close()
+    with Database(path) as db:
+        assert db.query("select spread_line, total_line from games") == [{"spread_line": None, "total_line": None}]
+        db.upsert(
+            "games",
+            [
+                dict(
+                    game_id="g1",
+                    season=2026,
+                    week=7,
+                    gameday=None,
+                    home_team="PHI",
+                    away_team="DAL",
+                    spread_line=3.5,
+                    total_line=49.5,
+                )
+            ],
+        )
+        assert db.team_game(2026, 7, "DAL")["total_line"] == 49.5
