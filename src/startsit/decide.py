@@ -23,6 +23,7 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
 
+from startsit import baseline
 from startsit.db import Database, DecisionCacheRow, utc_iso
 from startsit.evidence import EvidencePacket, PlayerLookupError, packet_for_names, question_parser
 from startsit.llm import BudgetedLLM, GeminiProvider, LLMError, QuotaExceeded
@@ -195,6 +196,19 @@ def cache_key(packet: EvidencePacket, model: str) -> str:
     return hashlib.sha256(f"{model}|v{PROMPT_VERSION}|{packet.to_text()}".encode()).hexdigest()
 
 
+def cap_confidence(decision: Decision, packet: EvidencePacket) -> Decision:
+    """A pick listed questionable or doubtful (injury report or news) is never "high" confidence.
+
+    Enforced in code because the model doesn't reliably follow this instruction.
+    """
+    picked = next(p for p in packet.players if p.player_id == decision.pick)
+    if decision.confidence != "high" or picked.game_status not in baseline.CAUTION_STATUSES:
+        return decision
+    cap_note = f"Confidence capped at medium: {picked.name} is listed {picked.game_status}."
+    note = f"{decision.note} {cap_note}" if decision.note else cap_note
+    return replace(decision, confidence="medium", note=note)
+
+
 def with_citations(decision: Decision, packet: EvidencePacket) -> Decision:
     """Attach the source link of every cited evidence id, for the UI."""
     urls = {i.id: i.source_url for p in packet.players for i in p.items}
@@ -205,7 +219,7 @@ def decide(db: Database, packet: EvidencePacket, llm: BudgetedLLM | None) -> Dec
     """The validated LLM pick (cached), else the baseline pick with a note saying why."""
 
     def fallback(note: str) -> Decision:
-        return with_citations(baseline_decision(packet, note), packet)
+        return cap_confidence(with_citations(baseline_decision(packet, note), packet), packet)
 
     if llm is None:
         return fallback("AI unavailable; showing the baseline pick.")
@@ -229,7 +243,7 @@ def decide(db: Database, packet: EvidencePacket, llm: BudgetedLLM | None) -> Dec
             return fallback("AI unavailable; showing the baseline pick.")
         decision, problems = validate(raw, packet)
         if decision is not None:
-            decision = with_citations(replace(decision, model=model), packet)
+            decision = cap_confidence(with_citations(replace(decision, model=model), packet), packet)
             row = DecisionCacheRow(
                 cache_key=key, created_at=utc_iso(datetime.now(UTC)), model=model, decision_json=decision.to_json()
             )

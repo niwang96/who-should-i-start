@@ -151,3 +151,25 @@ def test_decide_respects_the_daily_budget_and_works_without_an_llm(db):
 def test_decision_round_trips_through_json():
     decision, _ = validate(answer(), make_packet())
     assert Decision.from_json(decision.to_json()) == decision
+
+
+def test_confidence_is_capped_for_a_questionable_pick(db):
+    packet = make_packet()
+    packet.players[1].game_status = "questionable"
+    decision = decide(db, packet, budgeted(db, FakeProvider(responses=[answer(confidence="high")])))
+    assert decision.confidence == "medium"
+    assert decision.note == "Confidence capped at medium: Puka Nacua is listed questionable."
+    # The baseline fallback is capped too, and the note keeps both reasons.
+    fallback = decide(db, make_packet(margin=7.5), None)
+    assert fallback.confidence == "high"
+    packet2 = make_packet(margin=7.5)
+    packet2.players[1].game_status = "doubtful"
+    capped = decide(db, packet2, None)
+    assert capped.confidence == "medium" and capped.note.startswith("AI unavailable") and "doubtful" in capped.note
+
+
+def test_low_or_medium_confidence_is_left_alone(db):
+    packet = make_packet()
+    packet.players[1].game_status = "questionable"
+    decision = decide(db, packet, budgeted(db, FakeProvider(responses=[answer(confidence="low")])))
+    assert (decision.confidence, decision.note) == ("low", None)

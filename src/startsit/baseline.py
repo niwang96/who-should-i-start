@@ -1,9 +1,11 @@
 """Code-only baseline: the pick the LLM has to beat or explain disagreeing with.
 
 Currently 100% FantasyPros consensus. Each player's consensus projection (PPR, from
-the weekly rankings) is converted to the league's scoring format, then zeroed for
-players who can't play: on bye, ruled Out, or not on the active roster. Usage-based
-adjustments are deliberately left out until the weekly evaluation shows whether they help.
+the weekly rankings) is converted to the league's scoring format (with FantasyPros'
+projected receptions, else recent usage), then zeroed for players who can't play: on bye,
+ruled out (injury report or this week's news), or not on the active roster unless this
+week's news says they're active. Usage-based adjustments are deliberately left out until
+the weekly evaluation shows whether they help.
 
 Points, not ranks, are compared, because ECR ranks are per position (is RB20 better
 than WR16?).
@@ -35,6 +37,8 @@ ROSTER_STATUS_LABELS = {
 }
 # Statuses where the player has no team at all.
 NO_TEAM_STATUSES = {"CUT", "RET"}
+# Game statuses (lowercase, injury report or news) that cap the decision's confidence.
+CAUTION_STATUSES = {"questionable", "doubtful"}
 
 
 def roster_status_label(status: str) -> str:
@@ -48,8 +52,15 @@ class BaselineInput:
     proj_ppr: float | None  # None: not in the weekly rankings
     exp_receptions: float | None  # per game, from recent usage; None: no games yet
     on_bye: bool = False
-    report_status: str | None = None
+    report_status: str | None = None  # official injury report: Out, Doubtful, Questionable
     roster_status: str | None = None
+    proj_receptions: float | None = None  # FantasyPros projected catches, preferred for conversion
+    news_status: str | None = None  # this week's newest news status: out | doubtful | questionable | active
+
+    @property
+    def game_status(self) -> str | None:
+        """The freshest game status, lowercase: news (newer) first, else the injury report."""
+        return self.news_status or (self.report_status.lower() if self.report_status else None)
 
 
 @dataclass(frozen=True)
@@ -69,20 +80,29 @@ def convert_ppr(points_ppr: float, exp_receptions: float, scoring: Scoring) -> f
     return max(0.0, from_ppr(points_ppr, exp_receptions, scoring))
 
 
+def conversion_receptions(inp: BaselineInput) -> float | None:
+    """Catches to convert PPR points with: FantasyPros' projection, else recent usage."""
+    return inp.proj_receptions if inp.proj_receptions is not None else inp.exp_receptions
+
+
 def score(inp: BaselineInput, scoring: Scoring) -> BaselineScore:
-    if inp.roster_status is not None and inp.roster_status not in PLAYABLE_STATUSES:
+    # The weekly roster lags activations by a day or two; this week's news can show a player is back.
+    if inp.roster_status is not None and inp.roster_status not in PLAYABLE_STATUSES and inp.news_status != "active":
         return BaselineScore(inp.player_id, 0.0, f"{roster_status_label(inp.roster_status)}, not on the active roster")
     if inp.on_bye:
         return BaselineScore(inp.player_id, 0.0, "on bye")
+    if inp.news_status == "out":
+        return BaselineScore(inp.player_id, 0.0, "ruled out (news)")
     if inp.report_status in OUT_STATUSES:
         return BaselineScore(inp.player_id, 0.0, f"ruled {inp.report_status}")
     if inp.proj_ppr is None:
         return BaselineScore(inp.player_id, 0.0, "not in FantasyPros weekly rankings")
     if not converts(inp.position, scoring):
         return BaselineScore(inp.player_id, inp.proj_ppr)
-    if inp.exp_receptions is None:
-        return BaselineScore(inp.player_id, inp.proj_ppr, "PPR projection; no usage data to convert")
-    return BaselineScore(inp.player_id, round(convert_ppr(inp.proj_ppr, inp.exp_receptions, scoring), 1))
+    receptions = conversion_receptions(inp)
+    if receptions is None:
+        return BaselineScore(inp.player_id, inp.proj_ppr, "PPR projection; no reception data to convert")
+    return BaselineScore(inp.player_id, round(convert_ppr(inp.proj_ppr, receptions, scoring), 1))
 
 
 def leaders(scores: list[BaselineScore]) -> list[BaselineScore]:

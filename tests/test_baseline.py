@@ -19,7 +19,7 @@ def test_conversion_never_goes_negative():
 def test_qbs_and_missing_usage_keep_the_ppr_projection():
     assert score(inp(position="QB", exp_receptions=None), "std").points == 15.0
     s = score(inp(exp_receptions=None), "half")
-    assert s.points == 15.0 and "no usage data" in s.note
+    assert s.points == 15.0 and "no reception data" in s.note
 
 
 @pytest.mark.parametrize(
@@ -55,3 +55,32 @@ def test_pick_returns_winner_and_margin():
 def test_leaders_returns_everyone_tied_at_the_top():
     scores = [BaselineScore("A", 9.0), BaselineScore("B", 12.0), BaselineScore("C", 12.0)]
     assert [s.player_id for s in leaders(scores)] == ["B", "C"]
+
+
+def test_fantasypros_receptions_are_preferred_for_conversion():
+    assert score(inp(proj_receptions=4.0), "std").points == 11.0  # 15 - 4, not 15 - 6 from usage
+    assert score(inp(proj_receptions=None), "std").points == 9.0  # falls back to usage
+
+
+@pytest.mark.parametrize(
+    "kw,points,note",
+    [
+        (dict(news_status="out"), 0.0, "ruled out (news)"),
+        (dict(roster_status="EXE", news_status="active"), 15.0, None),  # activated after the roster snapshot
+        (
+            dict(roster_status="RES", news_status="questionable"),
+            0.0,
+            "on a reserve list (IR/PUP/NFI), not on the active roster",
+        ),
+        (dict(news_status="questionable"), 15.0, None),
+    ],
+)
+def test_this_weeks_news_status(kw, points, note):
+    s = score(inp(**kw), "ppr")
+    assert (s.points, s.note) == (points, note)
+
+
+def test_game_status_prefers_news_over_the_injury_report():
+    assert inp(report_status="Questionable").game_status == "questionable"
+    assert inp(report_status="Questionable", news_status="out").game_status == "out"
+    assert inp().game_status is None

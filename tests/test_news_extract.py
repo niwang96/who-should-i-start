@@ -39,8 +39,12 @@ def item(n, published_at="2026-10-24T10:00:00+00:00", summary="Details."):
     )
 
 
-def fact(item_id, name="Puka Nacua", team="LAR", event="injury", severity="medium", summary="Questionable."):
-    return dict(item_id=item_id, player=name, team=team, event=event, severity=severity, summary=summary)
+def fact(
+    item_id, name="Puka Nacua", team="LAR", event="injury", severity="medium", summary="Questionable.", status="none"
+):
+    return dict(
+        item_id=item_id, player=name, team=team, event=event, severity=severity, summary=summary, game_status=status
+    )
 
 
 def test_normalize_name_and_matcher():
@@ -59,7 +63,7 @@ def test_facts_from_response_attaches_code_owned_fields_and_drops_bad_rows():
     response = {
         "facts": [
             fact("N1"),
-            fact("N1", summary="Duplicate for the same player and item: last one wins."),
+            fact("N1", summary="Duplicate for the same player and item: last one wins.", status="questionable"),
             fact("N2", name="Ryan Miller", team="NE", event="transaction", severity="low", summary="Signed."),
             fact("N9"),  # unknown item id
             fact("N2", name="Somebody Else"),  # unmatched player
@@ -79,6 +83,7 @@ def test_facts_from_response_attaches_code_owned_fields_and_drops_bad_rows():
             event="injury",
             severity="medium",
             summary="Duplicate for the same player and item: last one wins.",
+            game_status="questionable",
         ),
         dict(
             item_id="RotoWire:2",
@@ -89,6 +94,7 @@ def test_facts_from_response_attaches_code_owned_fields_and_drops_bad_rows():
             event="transaction",
             severity="low",
             summary="Signed.",
+            game_status=None,  # "none" from the model is stored as no status
         ),
     ]
     assert facts_from_response(None, items, PlayerMatcher(PLAYERS)) == []

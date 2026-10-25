@@ -30,6 +30,7 @@ log = logging.getLogger("startsit.ingest.news_extract")
 
 EVENTS = ("injury", "practice", "return", "role_change", "transaction", "suspension", "performance", "other")
 SEVERITIES = ("high", "medium", "low")
+GAME_STATUSES = ("out", "doubtful", "questionable", "active", "none")
 CHUNK_SIZE = 40  # items per LLM call; ~40 headlines is a few thousand tokens
 LOOKBACK = timedelta(days=7)  # older items aren't worth a call
 MAX_ITEMS_PER_RUN = 400
@@ -50,6 +51,9 @@ Rules:
   performance (a notable result in a game already played), other (any other playing-time fact).
 - severity: impact on the player's fantasy value this week. high = likely to miss the game or a
   major role change; medium = uncertain status or meaningful change; low = minor.
+- game_status: the player's status for their next game, only if the item states it: out (ruled
+  out, inactive, placed on IR or suspended), doubtful, questionable, active (cleared, activated,
+  no injury designation, will play); otherwise none.
 - summary: at most 25 words, restating only what the item says."""
 
 RESPONSE_SCHEMA: dict[str, Any] = {
@@ -66,8 +70,9 @@ RESPONSE_SCHEMA: dict[str, Any] = {
                     "event": {"type": "STRING", "enum": list(EVENTS)},
                     "severity": {"type": "STRING", "enum": list(SEVERITIES)},
                     "summary": {"type": "STRING"},
+                    "game_status": {"type": "STRING", "enum": list(GAME_STATUSES)},
                 },
-                "required": ["item_id", "player", "team", "event", "severity", "summary"],
+                "required": ["item_id", "player", "team", "event", "severity", "summary", "game_status"],
             },
         }
     },
@@ -142,6 +147,7 @@ def facts_from_response(response: Any, items: Sequence[NewsItemRow], matcher: Pl
             event=event,
             severity=severity,
             summary=summary,
+            game_status=status if (status := raw.get("game_status")) in GAME_STATUSES[:-1] else None,
         )
     return list(facts.values())
 

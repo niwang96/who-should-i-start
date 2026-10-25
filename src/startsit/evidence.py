@@ -21,7 +21,18 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal, NamedTuple, cast
 
 from startsit import baseline
-from startsit.db import Database, GameRow, InjuryRow, NewsFactRow, PlayerRow, RankingRow, RosterRow, UsageRow, utc_iso
+from startsit.db import (
+    Database,
+    GameRow,
+    InjuryRow,
+    NewsFactRow,
+    PlayerRow,
+    ProjectionRow,
+    RankingRow,
+    RosterRow,
+    UsageRow,
+    utc_iso,
+)
 from startsit.scoring import LABELS, SCORINGS, Scoring, column, reception_discount
 
 NFLVERSE_URL = "https://github.com/nflverse/nflverse-data"
@@ -58,6 +69,8 @@ class PlayerContext:
     game: GameRow | None  # the team's game this week, with betting lines
     on_bye: bool
     missed_games: int  # games the player's team played since the player last played (0 if unknown)
+    projection: ProjectionRow | None = None  # FantasyPros per-format projection
+    news_status: NewsFactRow | None = None  # newest news fact this week that states a game status
 
     @property
     def exp_receptions(self) -> float | None:
@@ -88,6 +101,7 @@ class PlayerEvidence:
     team: str | None
     score: baseline.BaselineScore
     items: list[EvidenceItem] = field(default_factory=list)
+    game_status: str | None = None  # freshest of news and injury report, lowercase
 
 
 @dataclass
@@ -171,6 +185,14 @@ def load_context(db: Database, player_id: str, q: Question) -> PlayerContext:
             missed = by_roster
         elif team is not None:
             missed = db.team_games(q.season, team, after, through)
+    since, until = utc_iso(q.as_of - NEWS_LOOKBACK), utc_iso(q.as_of)
+    news = db.news_for_player(player_id, since, until, NEWS_PER_PLAYER)
+    # A status only counts for this week if it came after the team's previous game.
+    last_game = db.team_last_game_day(q.season, team, q.week) if team else None
+    status_since = max(since, f"{last_game}T23:59:59+00:00") if last_game else since
+    news_status = db.latest_news_status(player_id, status_since, until)
+    if news_status and news_status not in news:
+        news = sorted([*news, news_status], key=lambda n: n["published_at"], reverse=True)
     return PlayerContext(
         player=player,
         team=team,
@@ -179,9 +201,11 @@ def load_context(db: Database, player_id: str, q: Question) -> PlayerContext:
         usage=usage,
         injury=db.injury(player_id, q.season, q.week),
         game=db.team_game(q.season, q.week, team) if team else None,
-        news=db.news_for_player(player_id, utc_iso(q.as_of - NEWS_LOOKBACK), utc_iso(q.as_of), NEWS_PER_PLAYER),
+        news=news,
         on_bye=on_bye,
         missed_games=missed,
+        projection=db.latest_projection(player_id, q.season, q.week),
+        news_status=news_status,
     )
 
 
@@ -194,6 +218,8 @@ def baseline_input(ctx: PlayerContext) -> baseline.BaselineInput:
         on_bye=ctx.on_bye,
         report_status=ctx.injury["report_status"] if ctx.injury else None,
         roster_status=ctx.roster["status"] if ctx.roster else None,
+        proj_receptions=ctx.projection["receptions"] if ctx.projection else None,
+        news_status=ctx.news_status["game_status"] if ctx.news_status else None,
     )
 
 
@@ -245,17 +271,23 @@ def consensus_facts(ctx: PlayerContext, q: Question) -> list[Fact]:
         )
     ]
     if r["proj_ppr"] is not None:
-        exp_rec = ctx.exp_receptions
+        inp = baseline_input(ctx)
+        receptions = baseline.conversion_receptions(inp)
         if not baseline.converts(ctx.player["position"], q.scoring):
             text = f"Consensus projection {r['proj_ppr']:.1f} pts"
-        elif exp_rec is None:
-            text = f"Consensus projection {r['proj_ppr']:.1f} PPR pts (no usage data to convert to {q.label})"
+        elif receptions is None:
+            text = f"Consensus projection {r['proj_ppr']:.1f} PPR pts (no reception data to convert to {q.label})"
         else:
-            converted = baseline.convert_ppr(r["proj_ppr"], exp_rec, q.scoring)
+            converted = baseline.convert_ppr(r["proj_ppr"], receptions, q.scoring)
             per_catch = reception_discount(q.scoring)
+            basis = (
+                "FantasyPros projected catches"
+                if inp.proj_receptions is not None
+                else "expected catches/game from recent usage"
+            )
             text = (
                 f"Consensus projection {r['proj_ppr']:.1f} PPR pts, about {converted:.1f} {q.label} "
-                f"(minus {per_catch:g} x {exp_rec:.1f} expected catches/game)"
+                f"(minus {per_catch:g} x {receptions:.1f} {basis})"
             )
         facts.append(Fact("projection", text, r["source_url"]))
     return facts
@@ -375,8 +407,14 @@ def build_packet(
     n = 0
     for pid in player_ids:
         ctx = load_context(db, pid, q)
+        inp = baseline_input(ctx)
         pe = PlayerEvidence(
-            pid, ctx.player["name"], ctx.player["position"], ctx.team, baseline.score(baseline_input(ctx), scoring)
+            pid,
+            ctx.player["name"],
+            ctx.player["position"],
+            ctx.team,
+            baseline.score(inp, scoring),
+            game_status=inp.game_status,
         )
         for build in ITEM_BUILDERS:
             for fact in build(ctx, q):
