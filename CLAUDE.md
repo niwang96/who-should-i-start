@@ -73,10 +73,11 @@ Many users will ask about the same players, so cache per-player results.
 
 ## Stack (decided)
 - **Language:** Python everywhere (author is primarily a Java dev; Python chosen for the nflverse/LLM ecosystem and resume range).
-- **Ingest:** Python jobs (`nflreadpy`) run by GitHub Actions cron, writing to Supabase.
+- **Ingest:** Python jobs (`nflreadpy`) run by GitHub Actions cron, writing to Supabase. The repo is **public** (since Oct 25 2026), so Actions minutes are free; GitHub disables scheduled workflows in a public repo after 60 days without repo activity, so re-enable `ingest.yml` if that happens in the off-season.
 - **Web app:** FastAPI on Vercel's free Python functions; simple HTMX/Jinja frontend (no JS framework for MVP).
 - **DB:** New columns are added to existing tables automatically on connect (`Database._add_missing_columns`; they must be nullable). Supabase (Postgres) via `DATABASE_URL` (session pooler URI; the direct connection is IPv6-only, which Actions/Vercel can't reach; the Claude Code cloud env can't reach Postgres at all). Local SQLite when unset. All SQL lives in `startsit/db.py` and is written once for both backends; tests run on both.
-- **Code quality:** ruff (lint + format) and mypy run in CI alongside pytest.
+- **Code quality:** ruff (lint + format) and mypy run in CI alongside pytest; CI fails below **95% branch coverage** (`pyproject.toml`). Live integration tests (`tests/test_live.py`, marker `live`, deselected by default) hit the real services with a minimal quota (2–4 Gemini calls, 1 FantasyPros call) via `integration.yml`: only on merges to `main` touching source adapters, and by hand (Actions → integration → Run workflow, any branch). No schedule: the ingest jobs already call every service.
+- **Access:** the CLIs (`python -m startsit.ingest`, `python -m startsit.decide` for debugging) aren't network endpoints; they reach production only with the secrets. Secrets live only in GitHub Actions secrets, Vercel env vars and the Claude Code env. On Postgres all tables have RLS enabled with no policies (set on connect), which blocks Supabase's REST API; the app connects as the tables' owner.
 - **LLM:** Gemini free tier, model **`gemini-3.5-flash-lite`** (decided Oct 24 2026; 500 requests/day vs 20 for `gemini-3.5-flash`). Read the model id from `GEMINI_MODEL` (default `gemini-3.5-flash-lite`) behind a provider interface so it can be swapped. Newer Flash versions listed on the key (3.6/3.7/3.8) aren't usable for this project. Unit tests use a fake provider and never call a real LLM.
 
 ## Secrets
@@ -101,6 +102,7 @@ Many users will ask about the same players, so cache per-player results.
    - News extraction drops role speculation ("may soon start") via the prompt plus a code filter on may/might/could for role facts without a game status.
    - FantasyPros projections are fetched in rank order across positions, so a quota cut-off loses the lowest-ranked players everywhere instead of a whole position (the first post-4b run got 179 of ~240 before a 429).
    - Decisions require 2–3 factors (matching the prompt); shared HTTP GET with one User-Agent (`startsit/http.py`).
+4d. ~~Free-tier protections~~ (Oct 25 2026), so step 5 is only the web app. `BudgetedLLM` checks, before every Gemini call, by counting `llm_calls` (now with `called_at` written by code and a nullable `visitor` column): the purpose's daily budget (decide 400, news 40), a **shared 12 calls/minute** cap across ingest and web (Gemini allows 15), and per-visitor limits for decisions (`decide.VISITOR_LIMITS`: 6 new AI answers per 10 min, 25/day; cached answers are free). Visitors are a salted hash of the IP (`llm.visitor_id`, `VISITOR_SALT`). Each limit raises its own error (`QuotaExceeded` daily, `RateLimited` per minute, `VisitorLimited`) and the baseline fallback says which; a Gemini 429 naming a per-day quota maps to daily, anything else to per-minute. The web app builds one `decide.decide_llm(db, visitor)` per request. Same PR: 95% coverage gate, live integration tests, `startsit.evidence` CLI removed (`decide --no-llm` prints the packet), RLS on every Postgres table. Count-then-call can overshoot slightly under concurrency, hence the headroom.
 5. Web UI + recommendation logging
 6. Weekly evaluation, then Reddit as an optional signal
 

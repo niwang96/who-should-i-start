@@ -1,0 +1,40 @@
+name: integration
+
+# Live tests against the real services (tests/test_live.py). They spend a little API quota
+# (2-4 Gemini calls and 1 FantasyPros call per run), so they run as rarely as possible: only
+# when a merge to main changes code that talks to an outside service, or when started by hand
+# (Actions > integration > Run workflow; pick a branch to test a PR before merging). No schedule:
+# the hourly and daily ingest jobs already exercise every service for real.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "src/startsit/llm.py"
+      - "src/startsit/decide.py"
+      - "src/startsit/http.py"
+      - "src/startsit/ingest/**"
+      - "tests/test_live.py"
+      - "pyproject.toml"
+
+# One live run at a time, so a burst of pushes can't multiply the quota spent.
+concurrency:
+  group: integration
+  cancel-in-progress: true
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Pull requests from forks get no secrets; the tests that need a key then skip.
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      FANTASYPROS_API_KEY: ${{ secrets.FANTASYPROS_API_KEY }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -e '.[dev]'
+      - run: pytest -m live -v

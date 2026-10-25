@@ -10,8 +10,8 @@ on:
     - cron: "47 * * * *"
     # Fetch feeds only (no LLM), every 15 minutes at peak times, because RotoWire's feed only
     # lists its latest 5 items. The next hourly run extracts what these store. Times are UTC:
-    # Sunday games through Sunday night, and Thursday/Monday night games. (~100 runs/week; the
-    # repo is private, so these count against the 2,000 free Actions minutes/month.)
+    # Sunday games through Sunday night, and Thursday/Monday night games (~100 runs/week; Actions
+    # minutes are free for public repos).
     - cron: "*/15 16-23 * * 0"
     - cron: "*/15 0-4 * * 1"
     - cron: "*/15 22-23 * * 1,4"
