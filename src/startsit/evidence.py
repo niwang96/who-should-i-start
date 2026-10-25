@@ -19,6 +19,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Literal, NamedTuple, cast
+from zoneinfo import ZoneInfo
 
 from startsit import baseline
 from startsit.db import (
@@ -33,6 +34,7 @@ from startsit.db import (
     UsageRow,
     utc_iso,
 )
+from startsit.names import PlayerMatcher
 from startsit.scoring import LABELS, SCORINGS, Scoring, column, reception_discount
 
 NFLVERSE_URL = "https://github.com/nflverse/nflverse-data"
@@ -41,6 +43,8 @@ EvidenceKind = Literal["availability", "consensus", "projection", "matchup", "us
 
 NEWS_LOOKBACK = timedelta(days=7)
 NEWS_PER_PLAYER = 3
+EASTERN = ZoneInfo("America/New_York")  # the schedule's game days and kickoff times are US Eastern
+GAME_LENGTH = timedelta(hours=4)  # kickoff to final whistle, with margin
 
 
 @dataclass(frozen=True)
@@ -77,6 +81,20 @@ class PlayerContext:
         # FF Opportunity's PPR and standard expected points differ by exactly the expected catches.
         return self.usage["xfp_ppr_l3"] - self.usage["xfp_std_l3"] if self.usage else None
 
+    @property
+    def baseline_input(self) -> baseline.BaselineInput:
+        return baseline.BaselineInput(
+            player_id=self.player["player_id"],
+            position=self.player["position"],
+            proj_ppr=self.ranking["proj_ppr"] if self.ranking else None,
+            exp_receptions=self.exp_receptions,
+            on_bye=self.on_bye,
+            report_status=self.injury["report_status"] if self.injury else None,
+            roster_status=self.roster["status"] if self.roster else None,
+            proj_receptions=self.projection["receptions"] if self.projection else None,
+            news_status=self.news_status["game_status"] if self.news_status else None,
+        )
+
 
 class Fact(NamedTuple):
     kind: EvidenceKind
@@ -102,6 +120,8 @@ class PlayerEvidence:
     score: baseline.BaselineScore
     items: list[EvidenceItem] = field(default_factory=list)
     game_status: str | None = None  # freshest of news and injury report, lowercase
+    kickoff: datetime | None = None  # UTC; None if unknown or no game
+    game_started: bool = False  # kicked off before the question was asked (locked in most leagues)
 
 
 @dataclass
@@ -112,12 +132,24 @@ class EvidencePacket:
     baseline_margin: float
 
     @property
+    def items(self) -> list[EvidenceItem]:
+        return [i for p in self.players for i in p.items]
+
+    @property
     def item_ids(self) -> set[str]:
-        return {i.id for p in self.players for i in p.items}
+        return {i.id for i in self.items}
+
+    @property
+    def names(self) -> dict[str, str]:
+        """Player id -> name."""
+        return {p.player_id: p.name for p in self.players}
+
+    def player(self, player_id: str) -> PlayerEvidence:
+        return next(p for p in self.players if p.player_id == player_id)
 
     def verdict(self) -> str:
         leaders = baseline.leaders([p.score for p in self.players])
-        names = {p.player_id: p.name for p in self.players}
+        names = self.names
         prefix = f"Baseline ({baseline.DESCRIPTION})"
         if len(leaders) > 1:
             tied = " and ".join(names[s.player_id] for s in leaders)
@@ -138,9 +170,12 @@ class PlayerLookupError(ValueError):
     pass
 
 
-def find_player(db: Database, name: str, team: str | None = None) -> PlayerRow:
-    """The one player matching `name` (and `team`, if given), else PlayerLookupError."""
-    rows = db.players_named(name, team)
+def find_player(db: Database, name: str, team: str | None = None, matcher: PlayerMatcher | None = None) -> PlayerRow:
+    """The one player matching `name` (and `team`, if given), else PlayerLookupError.
+
+    Pass a `matcher` to reuse one player index across several lookups.
+    """
+    rows = (matcher or PlayerMatcher(db.all_players())).candidates(name, team)
     if len(rows) == 1:
         return rows[0]
     on_team = f" on {team}" if team else ""
@@ -161,6 +196,26 @@ def current_week(db: Database, season: int) -> int:
 
 
 # --- 1. load ------------------------------------------------------------------------
+
+
+def kickoff(game: GameRow) -> datetime | None:
+    """Kickoff in UTC, from the schedule's US Eastern date and time; None if either is missing."""
+    if not game["gameday"] or not game["gametime"]:
+        return None
+    try:
+        local = datetime.fromisoformat(f"{game['gameday']}T{game['gametime']}")
+    except ValueError:
+        return None
+    return local.replace(tzinfo=EASTERN).astimezone(UTC)
+
+
+def game_over_by(game: GameRow) -> datetime | None:
+    """A time by which the game is surely over: kickoff + 4 hours, else the end of its game day (US Eastern)."""
+    if start := kickoff(game):
+        return start + GAME_LENGTH
+    if not game["gameday"]:
+        return None
+    return datetime.fromisoformat(f"{game['gameday']}T23:59:59").replace(tzinfo=EASTERN).astimezone(UTC)
 
 
 def load_context(db: Database, player_id: str, q: Question) -> PlayerContext:
@@ -187,9 +242,11 @@ def load_context(db: Database, player_id: str, q: Question) -> PlayerContext:
             missed = db.team_games(q.season, team, after, through)
     since, until = utc_iso(q.as_of - NEWS_LOOKBACK), utc_iso(q.as_of)
     news = db.news_for_player(player_id, since, until, NEWS_PER_PLAYER)
-    # A status only counts for this week if it came after the team's previous game.
-    last_game = db.team_last_game_day(q.season, team, q.week) if team else None
-    status_since = max(since, f"{last_game}T23:59:59+00:00") if last_game else since
+    # A status only counts for this week if it came after the team's previous game ended, so
+    # last week's "ruled out" or an in-game "won't return" doesn't carry over.
+    last_game = db.team_last_game(q.season, team, q.week) if team else None
+    last_game_over = game_over_by(last_game) if last_game else None
+    status_since = max(since, utc_iso(last_game_over)) if last_game_over else since
     news_status = db.latest_news_status(player_id, status_since, until)
     if news_status and news_status not in news:
         news = sorted([*news, news_status], key=lambda n: n["published_at"], reverse=True)
@@ -206,20 +263,6 @@ def load_context(db: Database, player_id: str, q: Question) -> PlayerContext:
         missed_games=missed,
         projection=db.latest_projection(player_id, q.season, q.week),
         news_status=news_status,
-    )
-
-
-def baseline_input(ctx: PlayerContext) -> baseline.BaselineInput:
-    return baseline.BaselineInput(
-        player_id=ctx.player["player_id"],
-        position=ctx.player["position"],
-        proj_ppr=ctx.ranking["proj_ppr"] if ctx.ranking else None,
-        exp_receptions=ctx.exp_receptions,
-        on_bye=ctx.on_bye,
-        report_status=ctx.injury["report_status"] if ctx.injury else None,
-        roster_status=ctx.roster["status"] if ctx.roster else None,
-        proj_receptions=ctx.projection["receptions"] if ctx.projection else None,
-        news_status=ctx.news_status["game_status"] if ctx.news_status else None,
     )
 
 
@@ -271,7 +314,7 @@ def consensus_facts(ctx: PlayerContext, q: Question) -> list[Fact]:
         )
     ]
     if r["proj_ppr"] is not None:
-        inp = baseline_input(ctx)
+        inp = ctx.baseline_input
         receptions = baseline.conversion_receptions(inp)
         if not baseline.converts(ctx.player["position"], q.scoring):
             text = f"Consensus projection {r['proj_ppr']:.1f} pts"
@@ -293,29 +336,43 @@ def consensus_facts(ctx: PlayerContext, q: Question) -> list[Fact]:
     return facts
 
 
+def team_spread(game: GameRow, team: str) -> float | None:
+    """Points the team is favored by (negative: underdog)."""
+    if game["spread_line"] is None:
+        return None
+    return game["spread_line"] if team == game["home_team"] else -game["spread_line"]
+
+
 def implied_points(game: GameRow, team: str) -> float | None:
     """The team's implied points from the betting lines: half the total, plus half the spread."""
-    if game["spread_line"] is None or game["total_line"] is None:
+    spread = team_spread(game, team)
+    if spread is None or game["total_line"] is None:
         return None
-    spread = game["spread_line"] if team == game["home_team"] else -game["spread_line"]
     return (game["total_line"] + spread) / 2
+
+
+def _eastern_time(dt: datetime) -> str:
+    """'Sun 1:00 PM ET' (portable: no platform-specific strftime flags)."""
+    local = dt.astimezone(EASTERN)
+    return f"{local:%a} {local.hour % 12 or 12}:{local:%M %p} ET"
 
 
 def matchup_facts(ctx: PlayerContext, q: Question) -> list[Fact]:
     g, team = ctx.game, ctx.team
     if g is None or team is None:
         return []
-    implied = implied_points(g, team)
-    if implied is None:
+    implied, spread = implied_points(g, team), team_spread(g, team)
+    if implied is None or spread is None:
         return []
     home = team == g["home_team"]
     opponent = g["away_team"] if home else g["home_team"]
-    spread = (g["spread_line"] or 0.0) * (1 if home else -1)
     edge = f"favored by {spread:g}" if spread > 0 else f"underdog by {-spread:g}" if spread < 0 else "pick'em"
+    start = kickoff(g)
+    when = f", kickoff {_eastern_time(start)}" if start else ""
     return [
         Fact(
             "matchup",
-            f"{team} {'vs' if home else 'at'} {opponent}: betting lines imply {implied:.1f} team points "
+            f"{team} {'vs' if home else 'at'} {opponent}{when}: betting lines imply {implied:.1f} team points "
             f"({edge}, game total {g['total_line']:g})",
             NFLVERSE_URL,
         )
@@ -407,7 +464,8 @@ def build_packet(
     n = 0
     for pid in player_ids:
         ctx = load_context(db, pid, q)
-        inp = baseline_input(ctx)
+        inp = ctx.baseline_input
+        start = kickoff(ctx.game) if ctx.game else None
         pe = PlayerEvidence(
             pid,
             ctx.player["name"],
@@ -415,6 +473,8 @@ def build_packet(
             ctx.team,
             baseline.score(inp, scoring),
             game_status=inp.game_status,
+            kickoff=start,
+            game_started=start is not None and start <= q.as_of,
         )
         for build in ITEM_BUILDERS:
             for fact in build(ctx, q):
@@ -445,7 +505,8 @@ def packet_for_names(
     if season is None:
         raise ValueError("no data yet; run python -m startsit.ingest first")
     week = week or current_week(db, season)
-    ids = [find_player(db, *parse_player_arg(name))["player_id"] for name in names]
+    matcher = PlayerMatcher(db.all_players())
+    ids = [find_player(db, *parse_player_arg(name), matcher=matcher)["player_id"] for name in names]
     return build_packet(db, ids, scoring, season, week)
 
 
@@ -462,15 +523,19 @@ def question_parser(description: str) -> argparse.ArgumentParser:
     return parser
 
 
+def packet_from_args(parser: argparse.ArgumentParser, db: Database, args: argparse.Namespace) -> EvidencePacket:
+    """The packet for parsed `question_parser` arguments; exits with the message on a bad question."""
+    try:
+        return packet_for_names(db, args.players, cast(Scoring, args.scoring), args.season, args.week)
+    except (PlayerLookupError, ValueError) as e:
+        parser.exit(1, f"error: {e}\n")
+
+
 def main() -> None:
     parser = question_parser("Print the evidence packet for a start/sit question.")
     args = parser.parse_args()
     with Database(args.db) as db:
-        try:
-            packet = packet_for_names(db, args.players, cast(Scoring, args.scoring), args.season, args.week)
-        except (PlayerLookupError, ValueError) as e:
-            parser.exit(1, f"error: {e}\n")
-        print(packet.to_text())
+        print(packet_from_args(parser, db, args).to_text())
 
 
 if __name__ == "__main__":

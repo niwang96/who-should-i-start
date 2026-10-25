@@ -74,6 +74,8 @@ def test_validate_accepts_a_grounded_answer():
         (answer(factors=[{"text": "Made up.", "evidence_ids": ["E99"]}]), "ids not in the packet: E99"),
         (answer(factors=[{"text": "No citation.", "evidence_ids": []}]), "at least one evidence id"),
         (answer(factors=[{"text": f"f{i}", "evidence_ids": ["E1"]} for i in range(4)]), "give 2 or 3 factors"),
+        (answer(factors=[{"text": "Only one.", "evidence_ids": ["E1"]}]), "give 2 or 3 factors"),
+        (answer(factors=[{"text": "A string, not a list.", "evidence_ids": "E1"}] * 2), "at least one evidence id"),
         (answer(pick="P1"), "baseline_disagreement must explain why"),
         ("not json", "not a JSON object"),
     ],

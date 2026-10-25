@@ -14,17 +14,16 @@ github.com/.../raw URLs some proxies (including the Claude Code cloud env) block
 from __future__ import annotations
 
 import io
-import urllib.request
 from dataclasses import dataclass
 
 import polars as pl
 
 from startsit.db import TABLES
+from startsit.http import get_bytes
 
 BASE_URL = "https://raw.githubusercontent.com/dynastyprocess/data/master/files"
 RANKINGS_URL = f"{BASE_URL}/fp_latest_weekly.csv"
 PLAYER_IDS_URL = f"{BASE_URL}/db_playerids.csv"
-USER_AGENT = "who-should-i-start/0.1 (+https://github.com/niwang96/who-should-i-start)"
 
 SKILL_PAGES = ["qb", "ppr-rb", "ppr-wr", "ppr-te"]
 FLOAT_COLS = {"ecr": "ecr", "sd": "ecr_sd", "best": "ecr_best", "worst": "ecr_worst", "r2p_pts": "proj_ppr"}
@@ -37,9 +36,7 @@ class RawRankings:
 
 
 def _read_csv(url: str) -> pl.DataFrame:
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        body = resp.read()
+    body = get_bytes(url, timeout=60)
     # Every column as text: the files use the literal "NA" for missing values.
     return pl.read_csv(io.BytesIO(body), infer_schema_length=0, null_values=["NA", ""])
 

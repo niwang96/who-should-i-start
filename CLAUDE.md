@@ -94,6 +94,13 @@ Many users will ask about the same players, so cache per-player results.
    - News facts carry a `game_status` (out/doubtful/questionable/active). This week's newest status (after the team's previous game) zeroes a player ruled out, and "active" overrides a stale non-active roster status.
    - A pick that's questionable/doubtful (news or injury report) is capped at medium confidence in code, with a note.
    - News is fetched every 15 minutes at peak times without the LLM (`--only news-fetch`: Sunday games, Monday/Thursday nights, UTC crons in `ingest.yml`); the hourly run extracts and also re-checks the rankings file. ESPN was dropped from the feeds (bot check from Actions).
+4c. ~~Data audit + review fixes~~ (Oct 25 2026). Audit: all 441 stored rankings match the source file; usage features recomputed from raw nflverse match; implied points check out; 12 live Gemini decisions had 0 numbers not in the packet. Without FantasyPros projections, half-PPR picks flip in 0.2% of clear (1+ pt) matchups and standard in 3.3% (usage-based catches are noisier: Puka Nacua 9.9 vs FantasyPros 5.9). Fixes:
+   - Player lookup uses normalized names (`startsit/names.py`, shared with news matching), so "AJ Brown" finds "A.J. Brown".
+   - The schedule's kickoff time (`games.gametime`, US Eastern) is in the matchup fact, and `PlayerEvidence.game_started` flags games already kicked off at `as_of` (the UI must say so; e.g. Thursday games on Sunday).
+   - A news game status only counts once the team's previous game is over (kickoff + 4 h), so an in-game "won't return" from Monday night doesn't zero next week.
+   - News extraction drops role speculation ("may soon start") via the prompt plus a code filter on may/might/could for role facts without a game status.
+   - FantasyPros projections are fetched in rank order across positions, so a quota cut-off loses the lowest-ranked players everywhere instead of a whole position (the first post-4b run got 179 of ~240 before a 429).
+   - Decisions require 2–3 factors (matching the prompt); shared HTTP GET with one User-Agent (`startsit/http.py`).
 5. Web UI + recommendation logging
 6. Weekly evaluation, then Reddit as an optional signal
 
@@ -132,6 +139,7 @@ Many users will ask about the same players, so cache per-player results.
 - [x] High confidence on questionable picks: now capped at medium in code (step 4b).
 - Decided Oct 24 2026: the baseline zeroes every player whose weekly roster status isn't Active (reserve/IR, practice squad, exempt, inactive, released, retired), not just cut/retired. nflverse can lag an activation by a day or two; the packet's roster-status item shows the LLM why.
 - Decided Oct 24 2026: the "current week" is the latest week with rankings, so after Monday night the app keeps answering for the finished week until the new week's rankings arrive (normally Tuesday). Step 5's UI should say which week it's answering for.
+- [ ] Step 5: show "game already started" (`PlayerEvidence.game_started`) and the kickoff time; use `names.PlayerMatcher` for autocomplete.
 - [ ] Step 5: store the full evidence packet (text + item ids) with each logged recommendation. Injury reports and roster status are overwritten as they update, so the packet is the only record of what the user and LLM saw.
 - [x] Supabase connection confirmed (Oct 24 2026): the first manual ingest run on `main` wrote the full season (954 players, 2,408 player-games, 441 week-7 rankings) to Supabase. The Claude Code cloud env **can't** reach Postgres (its proxy carries only HTTP/HTTPS), so development there uses SQLite and a local Postgres; Supabase is reached only from GitHub Actions, Vercel, or a laptop. `DATABASE_URL` must percent-encode special characters in the password (e.g. `#` → `%23`), or the value gets cut off when saved.
 

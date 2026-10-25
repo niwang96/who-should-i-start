@@ -2,15 +2,9 @@ from datetime import UTC, datetime
 
 import pytest
 
-from startsit.ingest.news_extract import (
-    CHUNK_SIZE,
-    PlayerMatcher,
-    build_prompt,
-    extract_news,
-    facts_from_response,
-    normalize_name,
-)
+from startsit.ingest.news_extract import CHUNK_SIZE, build_prompt, extract_news, facts_from_response
 from startsit.llm import BudgetedLLM, FakeProvider, LLMError, QuotaExceeded
+from startsit.names import PlayerMatcher
 
 NOW = datetime(2026, 10, 24, 20, 0, tzinfo=UTC)
 
@@ -47,17 +41,6 @@ def fact(
     )
 
 
-def test_normalize_name_and_matcher():
-    assert normalize_name("Kenneth Walker III") == normalize_name("kenneth walker") == "kenneth walker"
-    assert normalize_name("Amon-Ra St. Brown") == "amon ra st brown"
-    m = PlayerMatcher(PLAYERS)
-    assert m.match("Kenneth Walker") == "WALKER"
-    assert m.match("Ryan Miller") is None  # ambiguous without a team
-    assert m.match("Ryan Miller", "ne") == "MILLER_NE"
-    assert m.match("Puka Nacua", "LAR") == "NACUA"  # alias not needed for a unique name
-    assert m.match("Nobody") is None
-
-
 def test_facts_from_response_attaches_code_owned_fields_and_drops_bad_rows():
     items = [item(1), item(2)]
     response = {
@@ -70,6 +53,8 @@ def test_facts_from_response_attaches_code_owned_fields_and_drops_bad_rows():
             fact("N2", event="vibes"),  # invalid event
             fact("N2", summary=" "),  # empty summary
             fact("N2", event="other", severity="low"),  # color, not a playing-time fact
+            fact("N2", event="role_change", summary="Puka Nacua may soon take over as the WR1."),  # speculation
+            "not a fact",
         ]
     }
     facts = facts_from_response(response, items, PlayerMatcher(PLAYERS))
@@ -97,7 +82,20 @@ def test_facts_from_response_attaches_code_owned_fields_and_drops_bad_rows():
             game_status=None,  # "none" from the model is stored as no status
         ),
     ]
-    assert facts_from_response(None, items, PlayerMatcher(PLAYERS)) == []
+    for junk in (None, [], {"facts": "x"}):
+        assert facts_from_response(junk, items, PlayerMatcher(PLAYERS)) == []
+
+
+def test_hedged_wording_is_dropped_only_for_role_speculation():
+    items = [item(1)]
+    response = {
+        "facts": [
+            fact("N1", event="role_change", summary="Could see more snaps with the starter out."),
+            fact("N1", name="Kenneth Walker", team="SEA", summary="Could return Sunday.", status="questionable"),
+        ]
+    }
+    facts = facts_from_response(response, items, PlayerMatcher(PLAYERS))
+    assert [(f["player_id"], f["game_status"]) for f in facts] == [("WALKER", "questionable")]
 
 
 def test_build_prompt_numbers_items():

@@ -1,5 +1,6 @@
 import pytest
 
+from startsit import http
 from startsit.ingest import projections
 from startsit.ingest.__main__ import run_projections
 
@@ -71,6 +72,12 @@ def test_fetch_chunks_by_ten_with_colon_separated_ids_and_stops_at_the_quota():
     assert len(partial) == 10  # keeps what it fetched before the quota ran out
 
 
+def test_chunks_go_in_rank_order_across_positions():
+    wanted = {"QB": [f"q{i}" for i in range(12)], "WR": [f"w{i}" for i in range(25)]}
+    order = [(pos, chunk[0]) for pos, chunk in projections.chunks_by_rank(wanted)]
+    assert order == [("QB", "q0"), ("WR", "w0"), ("QB", "q10"), ("WR", "w10"), ("WR", "w20")]
+
+
 def test_build_maps_ids_and_formats():
     rows = projections.build(
         [api_player("1"), {"fpid": 2, "stats": {}}], [ranking("1", "WR", 1.0, "G1")], 2026, 7, "2026-10-25"
@@ -112,7 +119,7 @@ def test_client_spaces_calls_and_retries_a_throttle_once(monkeypatch):
             raise urllib.error.HTTPError(req.full_url, 429, "Limit Exceeded", {}, io.BytesIO(b""))
         return io.BytesIO(b'{"players": []}')
 
-    monkeypatch.setattr(projections.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(http.urllib.request, "urlopen", fake_urlopen)
     client = projections.FantasyProsClient("k", sleep=sleeps.append)
     responses[:] = [429, "ok", "ok"]
     assert client.get("p", {}) == {"players": []}  # throttled, waited, retried

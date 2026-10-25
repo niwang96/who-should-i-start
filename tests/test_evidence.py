@@ -62,12 +62,13 @@ def ranking(player_id, proj_ppr, scrape_date="2026-10-23", **kw):
     return row | kw
 
 
-def game(week, home, away, spread_line=None, total_line=None):
+def game(week, home, away, spread_line=None, total_line=None, gameday=None, gametime=None):
     return dict(
         game_id=f"2026_{week:02d}_{away}_{home}",
         season=2026,
         week=week,
-        gameday=None,
+        gameday=gameday,
+        gametime=gametime,
         home_team=home,
         away_team=away,
         spread_line=spread_line,
@@ -110,6 +111,7 @@ def seeded(db):
             player("IR", "Christian Kirk", "WR", "SF"),
             player("MILLER1", "Ryan Miller", "WR", "NE"),
             player("MILLER2", "Ryan Miller", "WR", "DAL"),
+            player("BROWN", "A.J. Brown", "WR", "PHI"),
         ],
     )
     db.upsert(
@@ -232,6 +234,7 @@ def test_find_player_and_current_week(seeded):
     assert find_player(seeded, "puka nacua")["player_id"] == "NACUA"
     assert find_player(seeded, "Breece")["player_id"] == "HALL"
     assert find_player(seeded, "Ryan Miller", "ne")["player_id"] == "MILLER1"
+    assert find_player(seeded, "AJ Brown")["player_id"] == find_player(seeded, "a.j. brown")["player_id"] == "BROWN"
     with pytest.raises(PlayerLookupError, match=r"ambiguous: Ryan Miller \(DAL\), Ryan Miller \(NE\)"):
         find_player(seeded, "Ryan Miller")
     with pytest.raises(PlayerLookupError, match="no player"):
@@ -357,3 +360,37 @@ def test_news_status_from_before_the_teams_last_game_is_ignored(seeded):
     )
     p = build_packet(seeded, ["NACUA", "SMITH"], "ppr", 2026, 7, as_of=datetime(2026, 10, 22, tzinfo=UTC))
     assert p.players[0].score.points == 24.5  # last week's "out" doesn't count this week
+
+
+def test_matchup_shows_kickoff_and_flags_games_already_started(seeded):
+    seeded.upsert(
+        "games",
+        [
+            game(7, "PHI", "DAL", 3.5, 49.5, gameday="2026-10-22", gametime="20:15"),  # Thursday night
+            game(7, "LV", "LA", 2.5, 44.0, gameday="2026-10-25", gametime="16:05"),
+        ],
+    )
+    p = build_packet(seeded, ["SMITH", "NACUA"], "ppr", 2026, 7, as_of=datetime(2026, 10, 24, tzinfo=UTC))
+    smith, nacua = p.players
+    assert "PHI vs DAL, kickoff Thu 8:15 PM ET: betting lines" in p.to_text()
+    assert "LA at LV, kickoff Sun 4:05 PM ET" in p.to_text()
+    assert smith.kickoff == datetime(2026, 10, 23, 0, 15, tzinfo=UTC) and smith.game_started
+    assert not nacua.game_started
+
+
+def test_in_game_news_from_last_weeks_late_game_is_ignored(seeded):
+    # LA played a Monday night game (week 6: 8:15 PM ET = 00:15 UTC Tuesday).
+    seeded.upsert("games", [game(6, "LV", "LA", gameday="2026-10-19", gametime="20:15")])
+    seeded.upsert(
+        "news_facts",
+        [
+            news_fact("NACUA", "2026-10-20T02:30:00+00:00", "Won't return Monday.", 10, game_status="out"),
+            news_fact("SMITH", "2026-10-20T02:30:00+00:00", "Unrelated team, same time.", 11, game_status="out"),
+        ],
+    )
+    p = build_packet(seeded, ["NACUA", "SMITH"], "ppr", 2026, 7, as_of=datetime(2026, 10, 22, tzinfo=UTC))
+    assert p.players[0].score.points == 24.5  # during LA's game: not a status for week 7
+    assert p.players[1].score.points == 0.0  # PHI's week-6 game (no date in the fixture) doesn't cover it
+    seeded.upsert("news_facts", [news_fact("NACUA", "2026-10-20T15:00:00+00:00", "Ruled out.", 12, game_status="out")])
+    p = build_packet(seeded, ["NACUA", "SMITH"], "ppr", 2026, 7, as_of=datetime(2026, 10, 22, tzinfo=UTC))
+    assert p.players[0].score.points == 0.0  # the next day: counts
