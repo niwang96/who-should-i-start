@@ -10,10 +10,18 @@ evidence packet, news extraction, and the AI decision. Next: web UI and recommen
 python -m venv .venv && . .venv/bin/activate
 pip install -e '.[dev]'
 cp .env.example .env   # fill in keys; never commit .env
-ruff check . && ruff format --check . && mypy && pytest
+ruff check . && ruff format --check . && mypy && pytest --cov
 ```
-Tests run against in-memory SQLite, and also against Postgres when
-`STARTSIT_TEST_DATABASE_URL` points at a disposable database (CI starts one).
+Three kinds of tests:
+- **Unit tests:** pure logic with fakes; no network and never a real LLM.
+- **Database tests:** every query and ingest step, against in-memory SQLite and, when
+  `STARTSIT_TEST_DATABASE_URL` points at a disposable database, Postgres too (CI starts one).
+  These two kinds run on every pull request, and CI fails below 95% branch coverage.
+- **Live integration tests** (`tests/test_live.py`, `pytest -m live`): the real Gemini,
+  FantasyPros, feeds, rankings file and nflverse, end to end through our code. They spend 2-4
+  Gemini calls and 1 FantasyPros call per run, so `integration.yml` runs them weekly, on demand,
+  and on pull requests that change code talking to an outside service. Without a key, that
+  service's test skips.
 
 ## Database
 `startsit.db.Database` is the only module with SQL. Each table is defined once in `db.py`
@@ -22,6 +30,9 @@ generated from it, so adding a column is a one-line change. Scoring-format rules
 standard) live only in `startsit/scoring.py`. It talks to Postgres (Supabase) when given
 a `postgres://` URL or when `DATABASE_URL` is set, and to a local SQLite file otherwise
 (`STARTSIT_DB_PATH`, default `data/startsit.db`).
+
+On Postgres every table has row-level security enabled with no policies, so Supabase's REST API
+(the anon and authenticated roles) can't read or write them; only the database password can.
 
 ## Ingest (Stage 1)
 ```bash
@@ -92,7 +103,7 @@ quota error counts as the daily limit, anything else as the per-minute one.
 
 ## Baseline and evidence packet (Stage 2)
 ```bash
-python -m startsit.evidence "DeVonta Smith" "Puka Nacua" --scoring half
+python -m startsit.decide "DeVonta Smith" "Puka Nacua" --scoring half --no-llm
 ```
 prints the compact, numbered evidence (E1, E2, ...) the Stage 3 LLM will see, plus the
 code-only baseline pick. Add a team to disambiguate: `"Ryan Miller (NE)"`. The baseline is

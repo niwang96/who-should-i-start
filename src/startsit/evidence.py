@@ -8,12 +8,11 @@ Three steps, kept separate so new signals (news, Reddit) slot in without touchin
 The Stage 3 LLM must cite those ids; `EvidencePacket.to_text()` is what it sees, so it
 stays compact and unambiguous.
 
-Try it: python -m startsit.evidence "DeVonta Smith" "Puka Nacua" --scoring half
+See it: python -m startsit.decide "DeVonta Smith" "Puka Nacua" --scoring half --no-llm
 """
 
 from __future__ import annotations
 
-import argparse
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -486,7 +485,7 @@ def build_packet(
     return EvidencePacket(q, players, winner, margin)
 
 
-# --- CLI ------------------------------------------------------------------------------
+# --- resolving a question from player names -------------------------------------------
 
 _NAME_WITH_TEAM = re.compile(r"^(?P<name>.+?)\s*\((?P<team>[A-Za-z]{2,3})\)$")
 
@@ -508,35 +507,3 @@ def packet_for_names(
     matcher = PlayerMatcher(db.all_players())
     ids = [find_player(db, *parse_player_arg(name), matcher=matcher)["player_id"] for name in names]
     return build_packet(db, ids, scoring, season, week)
-
-
-def question_parser(description: str) -> argparse.ArgumentParser:
-    """The command-line arguments shared by the evidence and decide tools."""
-    parser = argparse.ArgumentParser(description=description)
-    parser.add_argument(
-        "players", nargs="+", help='two or more player names, optionally with a team: "Ryan Miller (NE)"'
-    )
-    parser.add_argument("--scoring", choices=SCORINGS, default="ppr")
-    parser.add_argument("--season", type=int, default=None)
-    parser.add_argument("--week", type=int, default=None, help="default: latest week with rankings")
-    parser.add_argument("--db", default=None, help="SQLite path or postgres:// URL")
-    return parser
-
-
-def packet_from_args(parser: argparse.ArgumentParser, db: Database, args: argparse.Namespace) -> EvidencePacket:
-    """The packet for parsed `question_parser` arguments; exits with the message on a bad question."""
-    try:
-        return packet_for_names(db, args.players, cast(Scoring, args.scoring), args.season, args.week)
-    except (PlayerLookupError, ValueError) as e:
-        parser.exit(1, f"error: {e}\n")
-
-
-def main() -> None:
-    parser = question_parser("Print the evidence packet for a start/sit question.")
-    args = parser.parse_args()
-    with Database(args.db) as db:
-        print(packet_from_args(parser, db, args).to_text())
-
-
-if __name__ == "__main__":
-    main()

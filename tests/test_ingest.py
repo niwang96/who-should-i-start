@@ -390,6 +390,13 @@ def test_visitor_column_is_added_to_an_old_llm_calls_table(tmp_path):
         assert db.llm_calls_since(now, visitor="v1") == 1
 
 
+def test_postgres_tables_have_row_level_security(db):
+    if not db.is_postgres:
+        pytest.skip("Postgres only")
+    rows = db.query("SELECT relname, relrowsecurity FROM pg_class WHERE relname IN ('players', 'llm_calls')")
+    assert {r["relname"]: r["relrowsecurity"] for r in rows} == {"players": True, "llm_calls": True}
+
+
 def test_optional_steps_log_failures_without_stopping(caplog):
     from startsit.ingest.__main__ import _optional
 

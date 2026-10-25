@@ -11,11 +11,12 @@ Validated answers are cached by a hash of the model, prompt version and exact pa
 so the same evidence never costs a second request, and new evidence (e.g. news) gets a
 fresh answer.
 
-Try it: python -m startsit.decide "DeVonta Smith" "Puka Nacua" --scoring half
+Try it: python -m startsit.decide "DeVonta Smith" "Puka Nacua" --scoring half [--no-llm]
 """
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import logging
@@ -25,7 +26,7 @@ from typing import Any, Literal, cast
 
 from startsit import baseline
 from startsit.db import Database, DecisionCacheRow, utc_iso
-from startsit.evidence import EvidencePacket, packet_from_args, question_parser
+from startsit.evidence import EvidencePacket, PlayerLookupError, packet_for_names
 from startsit.llm import (
     BudgetedLLM,
     GeminiProvider,
@@ -35,6 +36,7 @@ from startsit.llm import (
     VisitorLimit,
     VisitorLimited,
 )
+from startsit.scoring import SCORINGS, Scoring
 
 log = logging.getLogger("startsit.decide")
 
@@ -283,8 +285,24 @@ def decide(db: Database, packet: EvidencePacket, llm: BudgetedLLM | None) -> Dec
     return fallback("The AI's answer failed validation; showing the baseline pick.")
 
 
+def packet_from_args(parser: argparse.ArgumentParser, db: Database, args: argparse.Namespace) -> EvidencePacket:
+    """The packet for the parsed arguments; exits with the message on a bad question."""
+    try:
+        return packet_for_names(db, args.players, cast(Scoring, args.scoring), args.season, args.week)
+    except (PlayerLookupError, ValueError) as e:
+        parser.exit(1, f"error: {e}\n")
+
+
 def main() -> None:
-    parser = question_parser("Ask the AI who to start, with the evidence it used.")
+    """Developer tool: the evidence packet and the decision for a question, against any database."""
+    parser = argparse.ArgumentParser(description="Ask the AI who to start, with the evidence it used.")
+    parser.add_argument(
+        "players", nargs="+", help='two or more player names, optionally with a team: "Ryan Miller (NE)"'
+    )
+    parser.add_argument("--scoring", choices=SCORINGS, default="ppr")
+    parser.add_argument("--season", type=int, default=None)
+    parser.add_argument("--week", type=int, default=None, help="default: latest week with rankings")
+    parser.add_argument("--db", default=None, help="SQLite path or postgres:// URL")
     parser.add_argument("--no-llm", action="store_true", help="skip the AI and show the baseline pick")
     args = parser.parse_args()
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")

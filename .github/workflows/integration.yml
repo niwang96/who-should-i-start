@@ -1,0 +1,39 @@
+name: integration
+
+# Live tests against the real services (tests/test_live.py). They spend a little API quota
+# (2-4 Gemini calls and 1 FantasyPros call per run), so they don't run on every push: weekly,
+# on demand, and on pull requests that change code talking to an outside service.
+on:
+  schedule:
+    - cron: "23 13 * * 2"  # Tuesdays: after the week's games, between ingest runs
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "src/startsit/llm.py"
+      - "src/startsit/decide.py"
+      - "src/startsit/http.py"
+      - "src/startsit/ingest/**"
+      - "tests/test_live.py"
+      - "pyproject.toml"
+
+# One live run at a time, so a burst of pushes can't multiply the quota spent.
+concurrency:
+  group: integration
+  cancel-in-progress: true
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Pull requests from forks get no secrets; the tests that need a key then skip.
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      FANTASYPROS_API_KEY: ${{ secrets.FANTASYPROS_API_KEY }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -e '.[dev]'
+      - run: pytest -m live -v

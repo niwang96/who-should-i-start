@@ -316,6 +316,11 @@ class Database:
             self.conn = psycopg.connect(target, row_factory=dict_row)
             with self.conn.transaction():
                 self.conn.execute(SCHEMA)
+                # Supabase also serves the public schema through its REST API (anon/authenticated
+                # roles). Row-level security with no policies closes that door; the app connects as
+                # the tables' owner, which RLS doesn't restrict.
+                for table in ALL_TABLE_NAMES:
+                    self.conn.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
         else:
             if target != ":memory:":
                 Path(target).parent.mkdir(parents=True, exist_ok=True)

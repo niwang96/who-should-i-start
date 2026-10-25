@@ -1,7 +1,9 @@
 name: tests
 
 on:
+  # main after merges, and every pull request (pushes to PR branches would otherwise run twice).
   push:
+    branches: [main]
   pull_request:
 
 jobs:
@@ -29,4 +31,4 @@ jobs:
       - run: ruff check .
       - run: ruff format --check .
       - run: mypy
-      - run: pytest -q
+      - run: pytest -q --cov --cov-report=term
