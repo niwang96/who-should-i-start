@@ -123,14 +123,20 @@ def test_gemini_extracts_news_facts_with_the_real_schema(gemini, live_db):
 
 def test_fantasypros_projections_with_one_call():
     needs("FANTASYPROS_API_KEY")
-    wrs = rankings_raw().rankings.filter(pl.col("page") == "ppr-wr").head(3)
-    ids = [str(i) for i in wrs["fantasypros_id"]]
+    ranked = rankings.build_rankings(rankings_raw(), schedule(), season())
+    if ranked.is_empty():
+        pytest.skip("no current-week rankings (off-season)")
+    week = int(ranked["week"][0])
+    ids = ranked.filter(pl.col("position") == "WR").sort("ecr")["fantasypros_id"].head(3).to_list()
     client = projections.FantasyProsClient.from_env()
     assert client is not None
-    raw = projections.fetch(client, season(), int(schedule()["week"].max() or 1), {"WR": ids})  # one batch
-    rows = projections.build(raw, [], season(), 1, "live")
-    # Projections exist in season; the response shape is what's checked year-round.
-    assert all(r["points_ppr"] is not None for r in rows)
+    try:  # one call (plus one retry if throttled)
+        data = client.get(f"{season()}/projections", {"position": "WR", "week": week, "players": ":".join(ids)})
+    except projections.FantasyProsQuotaExceeded:
+        pytest.skip("FantasyPros quota reached; projections can't be checked until it resets")
+    rows = projections.build(data.get("players") or [], [], season(), week, "live")
+    assert len(rows) >= 2, "the top WRs should all have projections"
+    assert all(r["points_ppr"] is not None and r["receptions"] is not None for r in rows)
 
 
 def test_every_news_feed_returns_parseable_items():
