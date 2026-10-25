@@ -13,9 +13,10 @@ See it: python -m startsit.decide "DeVonta Smith" "Puka Nacua" --scoring half --
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Literal, NamedTuple, cast
 from zoneinfo import ZoneInfo
@@ -154,6 +155,10 @@ class EvidencePacket:
             tied = " and ".join(names[s.player_id] for s in leaders)
             return f"{prefix} has {tied} tied at {leaders[0].points:.1f} pts"
         return f"{prefix} favors {names[self.baseline_pick]} by {self.baseline_margin:.1f} pts"
+
+    def to_json(self) -> str:
+        """The whole packet (question, scores, evidence items with ids and links), for the record."""
+        return json.dumps(asdict(self), default=lambda o: o.isoformat() if isinstance(o, datetime) else str(o))
 
     def to_text(self) -> str:
         q = self.question
@@ -350,7 +355,7 @@ def implied_points(game: GameRow, team: str) -> float | None:
     return (game["total_line"] + spread) / 2
 
 
-def _eastern_time(dt: datetime) -> str:
+def eastern_time(dt: datetime) -> str:
     """'Sun 1:00 PM ET' (portable: no platform-specific strftime flags)."""
     local = dt.astimezone(EASTERN)
     return f"{local:%a} {local.hour % 12 or 12}:{local:%M %p} ET"
@@ -367,7 +372,7 @@ def matchup_facts(ctx: PlayerContext, q: Question) -> list[Fact]:
     opponent = g["away_team"] if home else g["home_team"]
     edge = f"favored by {spread:g}" if spread > 0 else f"underdog by {-spread:g}" if spread < 0 else "pick'em"
     start = kickoff(g)
-    when = f", kickoff {_eastern_time(start)}" if start else ""
+    when = f", kickoff {eastern_time(start)}" if start else ""
     return [
         Fact(
             "matchup",
@@ -497,13 +502,18 @@ def parse_player_arg(arg: str) -> tuple[str, str | None]:
 
 
 def packet_for_names(
-    db: Database, names: list[str], scoring: Scoring, season: int | None = None, week: int | None = None
+    db: Database,
+    names: list[str],
+    scoring: Scoring,
+    season: int | None = None,
+    week: int | None = None,
+    matcher: PlayerMatcher | None = None,
 ) -> EvidencePacket:
     """Resolve player names (optionally "Name (TEAM)") and default season/week, then build the packet."""
     season = season or db.latest_season()
     if season is None:
         raise ValueError("no data yet; run python -m startsit.ingest first")
     week = week or current_week(db, season)
-    matcher = PlayerMatcher(db.all_players())
+    matcher = matcher or PlayerMatcher(db.all_players())
     ids = [find_player(db, *parse_player_arg(name), matcher=matcher)["player_id"] for name in names]
     return build_packet(db, ids, scoring, season, week)

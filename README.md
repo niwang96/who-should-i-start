@@ -8,7 +8,7 @@ evidence packet, news extraction, and the AI decision. Next: web UI and recommen
 ## Setup
 ```bash
 python -m venv .venv && . .venv/bin/activate
-pip install -e '.[dev]'
+pip install -e '.[dev,ingest]'
 cp .env.example .env   # fill in keys; never commit .env
 ruff check . && ruff format --check . && mypy && pytest --cov
 ```
@@ -22,6 +22,25 @@ Three kinds of tests:
   Gemini calls and 1 FantasyPros call per run, so `integration.yml` runs them only on merges to
   `main` that change code talking to an outside service, and when started by hand. Without a key, that
   service's test skips.
+
+## Web app (Stage 5)
+```bash
+pip install -e '.[dev]'
+uvicorn startsit.web.app:app --reload   # http://localhost:8000, uses $DATABASE_URL or the SQLite file
+```
+FastAPI with Jinja templates and htmx (`src/startsit/web/`). htmx is vendored as a pinned file
+in `static/`, so pages load nothing from other sites and the content-security policy allows only
+the app's own origin. Every page works without JavaScript; with it, htmx swaps in just the
+result. The page says which week it answers for and how fresh the data is, suggests players as
+you type (`/players`), shows the pick, confidence, deciding factors with links to the numbered
+evidence, every evidence item with its source link, and a warning when a player's game has
+already kicked off. Every answer is logged to `recommendations` with the full packet (text and
+structure) for the weekly evaluation; visitors are recorded only as a salted hash.
+
+Deployed on Vercel (free Hobby plan): `api/index.py` exposes the app and `vercel.json` routes
+every path to it. The base install (no `ingest` extra) is all the web app needs, so polars and
+nflreadpy stay out of the deployment. Vercel environment variables: `DATABASE_URL` (Supabase
+**transaction pooler**, port 6543), `GEMINI_API_KEY`, `VISITOR_SALT`.
 
 ## Database
 `startsit.db.Database` is the only module with SQL. Each table is defined once in `db.py`

@@ -20,12 +20,13 @@ import argparse
 import hashlib
 import json
 import logging
+import uuid
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 
 from startsit import baseline
-from startsit.db import Database, DecisionCacheRow, utc_iso
+from startsit.db import Database, DecisionCacheRow, RecommendationRow, utc_iso
 from startsit.evidence import EvidencePacket, PlayerLookupError, packet_for_names
 from startsit.llm import (
     BudgetedLLM,
@@ -283,6 +284,30 @@ def decide(db: Database, packet: EvidencePacket, llm: BudgetedLLM | None) -> Dec
             return decision
         log.warning("decision rejected: %s", "; ".join(problems))
     return fallback("The AI's answer failed validation; showing the baseline pick.")
+
+
+def record_recommendation(db: Database, packet: EvidencePacket, decision: Decision, visitor: str | None = None) -> str:
+    """Log an answer shown to a user, with the full packet behind it; returns its id."""
+    q = packet.question
+    row = RecommendationRow(
+        rec_id=uuid.uuid4().hex,
+        created_at=utc_iso(datetime.now(UTC)),
+        season=q.season,
+        week=q.week,
+        scoring=q.scoring,
+        player_ids=json.dumps([p.player_id for p in packet.players]),
+        pick=decision.pick,
+        baseline_pick=decision.baseline_pick,
+        confidence=decision.confidence,
+        source=decision.source,
+        model=decision.model,
+        decision_json=decision.to_json(),
+        packet_text=packet.to_text(),
+        packet_json=packet.to_json(),
+        visitor=visitor,
+    )
+    db.upsert("recommendations", [row])
+    return row["rec_id"]
 
 
 def packet_from_args(parser: argparse.ArgumentParser, db: Database, args: argparse.Namespace) -> EvidencePacket:

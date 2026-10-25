@@ -1,0 +1,7 @@
+# Only api/, src/ and pyproject.toml are needed to serve the web app.
+tests/
+scripts/
+data/
+.github/
+*.db
+.coverage
