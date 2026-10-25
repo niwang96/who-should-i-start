@@ -59,8 +59,11 @@ python -m startsit.ingest              # current season → $DATABASE_URL or dat
 python -m startsit.ingest --season 2025 --db /tmp/test.db
 ```
 Each run re-ingests the full season from nflverse and upserts, so it is safe to re-run.
-GitHub Actions runs it daily (`.github/workflows/ingest.yml`), writing to Supabase when the
+GitHub Actions runs it (`.github/workflows/ingest.yml`), writing to Supabase when the
 `DATABASE_URL` repository secret is set (otherwise it uploads a SQLite file as an artifact).
+Every scheduled run is a news run (below) that also does this daily refresh when it's due (none
+since the latest 10:00 UTC), because GitHub delays or drops scheduled runs when it's busy: the
+first run to get through after 10:00 UTC does it.
 
 Tables (QB/RB/WR/TE, regular season only):
 - `players` — GSIS id, name, position, current roster team; includes rostered players who
@@ -87,16 +90,17 @@ derived by subtracting 0.5 / 1.0 × expected receptions.
 ## News (Stage 1, text)
 ```bash
 python -m startsit.ingest --only news        # fetch RSS, extract player facts with Gemini
-python -m startsit.ingest --only news-fetch  # fetch RSS only (no LLM), for frequent polling
+python -m startsit.ingest --only news-fetch  # fetch RSS only (no LLM)
 ```
 Feeds (`startsit/ingest/news.py`) are stored as headline + summary + link only. Items not yet
 processed are sent to Gemini in batches of ~40 (`startsit/ingest/news_extract.py`); the model
 returns, per player, an event type, a severity and a short restatement, and code attaches the
 URL, date and player id (names it can't match to a player are dropped). Every processed URL is
 cached in `news_extractions` (keyed by the feed's guid, else the link), so no item is sent twice. Facts also record a game
-status (out/doubtful/questionable/active) when the item states one. News uses at most 40 LLM calls a
-day (`llm_calls` logs every call). GitHub Actions fetches feeds every 15 minutes at peak times,
-runs the news step hourly, and runs the full ingest (including FantasyPros projections) daily.
+status (out/doubtful/questionable/active) when the item states one. News uses at most 60 LLM calls a
+day (`llm_calls` logs every call). GitHub Actions runs the news step hourly, every 30 minutes on
+Sunday mornings (about 8am to 1:30pm US Eastern, when inactives and game-time decisions come out and
+lineups are set) and twice before the 4pm games, and twice before Thursday and Monday night games.
 
 Tables: `news_items`, `news_extractions` (the per-URL LLM cache), `news_facts`, `llm_calls`.
 
@@ -111,7 +115,7 @@ packet, retries once with the problems, and otherwise falls back to the baseline
 so a repeat question costs nothing until the evidence changes.
 
 Free-tier protections (`startsit/llm.py`, enforced before every call by counting `llm_calls`):
-- daily budgets per purpose: 400 decisions, 40 news calls (Gemini allows 500/day);
+- daily budgets per purpose: 400 decisions, 60 news calls (Gemini allows 500/day);
 - one shared cap of 12 calls/minute across ingest and web requests (Gemini allows 15);
 - per visitor (web app): 6 new AI answers per 10 minutes and 25 per day, keyed by a salted hash
   of the IP address (`VISITOR_SALT`); cached answers don't count.

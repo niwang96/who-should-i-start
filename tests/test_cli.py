@@ -207,3 +207,36 @@ def test_get_bytes_sends_the_user_agent(monkeypatch):
     monkeypatch.setattr(http.urllib.request, "urlopen", fake_urlopen)
     assert http.get_bytes("https://x", {"X-Api-Key": "k"}) == b"body"
     assert sent["User-agent"] == http.USER_AGENT and sent["X-api-key"] == "k"
+
+
+@pytest.mark.parametrize(
+    "last_run,now,due",
+    [
+        (None, "2026-10-25 09:00", True),  # never refreshed
+        ("2026-10-25 10:20:00", "2026-10-25 20:00", False),  # today's refresh is done
+        ("2026-10-24 10:20:00", "2026-10-25 09:59", False),  # today's isn't due before 10:00 UTC
+        ("2026-10-24 10:20:00", "2026-10-25 10:05", True),  # due: the 10:17 run may never come
+        ("2026-10-24 09:59:00", "2026-10-25 06:00", True),  # yesterday's was missed too
+        ("2026-10-25 10:11:03.123456", "2026-10-25 23:00", False),  # Postgres timestamps
+    ],
+)
+def test_stats_due_once_a_day_after_ten_utc(last_run, now, due):
+    from datetime import UTC, datetime
+
+    assert ingest_main.stats_due(last_run, datetime.fromisoformat(now).replace(tzinfo=UTC)) is due
+
+
+def test_a_news_run_does_the_daily_refresh_when_it_is_due(tmp_path, monkeypatch, caplog):
+    path = str(tmp_path / "i.db")
+    raw = make_raw(stats=[stat_row("G1", 1)], snaps=[snap("P1", 1, 0.8)])
+    monkeypatch.setattr(ingest_main.nflverse, "fetch", lambda season: raw)
+    monkeypatch.setattr(ingest_main.rankings, "fetch", lambda: rankings_raw([rank_row("19222", "Wide Out")]))
+    monkeypatch.setattr(ingest_main.news, "fetch_all", lambda: {})
+    for var in ("FANTASYPROS_API_KEY", "GEMINI_API_KEY", "DATABASE_URL"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(ingest_main, "stats_due", lambda last, now: True)
+    caplog.set_level("INFO")
+    run_cli(monkeypatch, ingest_main.main, "--season", "2026", "--db", path, "--only", "news")
+    assert "daily stats refresh is due; running it first" in caplog.text
+    with Database(path) as db:
+        assert db.latest_stats_run() is not None and db.query("select count(*) as n from player_weeks")[0]["n"] == 1

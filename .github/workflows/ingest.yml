@@ -1,21 +1,22 @@
 name: ingest
 
+# Every scheduled run is a news run: fetch feeds, extract new headlines (~1 LLM call when
+# there are new items), re-check the rankings file, and, once a day after 10:00 UTC, the full
+# stats refresh (nflverse, rankings, FantasyPros projections). GitHub delays or drops
+# scheduled runs when busy, so the daily refresh isn't tied to one run: whichever run comes
+# first after 10:00 UTC does it. Times are UTC and cover both US daylight and standard time.
+# Minutes avoid :00, when GitHub's queue is busiest.
 on:
   schedule:
-    # Daily full run: nflverse publishes stats/snaps in batches after games, so a daily
-    # full-season refresh picks up each update within a day. It also archives that day's
-    # FantasyPros weekly rankings scrape and runs the news step.
-    - cron: "17 10 * * *"
-    # News, hourly: fetch feeds, extract new headlines (~1 LLM call), re-check the rankings file.
-    - cron: "47 * * * *"
-    # Fetch feeds only (no LLM), every 15 minutes at peak times, because RotoWire's feed only
-    # lists its latest 5 items. The next hourly run extracts what these store. Times are UTC:
-    # Sunday games through Sunday night, and Thursday/Monday night games (~100 runs/week; Actions
-    # minutes are free for public repos).
-    - cron: "*/15 16-23 * * 0"
-    - cron: "*/15 0-4 * * 1"
-    - cron: "*/15 22-23 * * 1,4"
-    - cron: "*/15 0-3 * * 2,5"
+    - cron: "17 10 * * *"  # the usual daily refresh
+    - cron: "47 * * * *"  # hourly news
+    # Sunday mornings, when inactives and game-time decisions come out and lineups are set:
+    # every 30 minutes, ~8am to 1:30pm US Eastern, then twice before the 4pm games.
+    - cron: "7,37 12-18 * * 0"
+    - cron: "17 19,20 * * 0"
+    # Before Thursday and Monday night games (8:15pm Eastern): ~7pm and ~7:45pm Eastern.
+    - cron: "2,42 23 * * 1,4"
+    - cron: "2,42 0 * * 2,5"
   workflow_dispatch:
     inputs:
       only:
@@ -52,12 +53,8 @@ jobs:
       - name: Ingest
         env:
           SEASON: ${{ inputs.season }}
-          # Manual runs use the chosen input; scheduled runs map their schedule to a mode.
-          ONLY: >-
-            ${{ github.event_name != 'schedule' && inputs.only
-            || github.event.schedule == '17 10 * * *' && 'all'
-            || github.event.schedule == '47 * * * *' && 'news'
-            || 'news-fetch' }}
+          # Manual runs use the chosen input; scheduled runs are news runs (see the top).
+          ONLY: ${{ github.event_name == 'schedule' && 'news' || inputs.only }}
         run: |
           [ "$ONLY" = all ] && ONLY=""
           python -m startsit.ingest ${ONLY:+--only "$ONLY"} ${SEASON:+--season "$SEASON"}

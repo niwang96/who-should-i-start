@@ -7,10 +7,12 @@ FANTASYPROS_API_KEY set it also archives FantasyPros projections (~26 API calls)
 
 news: stores new RSS items, extracts player facts from items not yet processed (batched
 LLM calls within a daily budget; skipped without GEMINI_API_KEY), and re-checks the
-rankings file so each update is archived within the hour.
+rankings file so each update is archived within the hour. It also runs the daily stats
+refresh when that's due (none since the latest 10:00 UTC), so the daily data arrives even
+when GitHub drops the scheduled run meant for it; every scheduled run uses this mode.
 
 news-fetch: stores new RSS items only (no LLM), for frequent polling of feeds that only
-list their latest few items; the next news run extracts them.
+list their latest few items, by hand; the next news run extracts them.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ from __future__ import annotations
 import argparse
 import logging
 from collections.abc import Callable
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time, timedelta
 
 import polars as pl
 
@@ -32,7 +34,11 @@ log = logging.getLogger("startsit.ingest")
 # The source normally refreshes daily; older than this and "current week" answers go stale.
 STALE_RANKINGS_DAYS = 3
 # News gets a slice of the 500/day Gemini free tier; the rest is for start/sit answers.
-NEWS_DAILY_LLM_BUDGET = 40
+# Hourly runs plus the Sunday-morning and pre-night-game runs make at most ~40 calls a day.
+NEWS_DAILY_LLM_BUDGET = 60
+# The daily stats refresh is due once per day after this time (UTC): nflverse's overnight
+# updates are in by then (6am US Eastern).
+DAILY_REFRESH_AFTER = time(10, 0)
 
 
 def run(db: Database, raw: nflverse.RawNflverse, season: int) -> dict[str, int]:
@@ -118,6 +124,27 @@ def run_news(
     return counts
 
 
+def stats_due(last_run: str | None, now: datetime) -> bool:
+    """Whether the daily stats refresh is due: none since the most recent DAILY_REFRESH_AFTER (UTC)."""
+    if last_run is None:
+        return True
+    slot = datetime.combine(now.astimezone(UTC).date(), DAILY_REFRESH_AFTER, UTC)
+    if now < slot:
+        slot -= timedelta(days=1)
+    return datetime.fromisoformat(last_run[:19]).replace(tzinfo=UTC) < slot
+
+
+def run_stats(db: Database, season: int) -> None:
+    """The daily refresh: nflverse, the rankings file and (with a key) FantasyPros projections."""
+    raw = nflverse.fetch(season)
+    run(db, raw, season)
+    run_rankings(db, rankings.fetch(), nflverse.build_games(raw), season)
+    if client := projections.FantasyProsClient.from_env():
+        _optional("projections", lambda: run_projections(db, client, season))
+    else:
+        log.warning("FANTASYPROS_API_KEY not set; projections skipped")
+
+
 def _optional(step: str, fn: Callable[[], object]) -> None:
     """Run a supplementary step; its failure is logged, not allowed to stop the steps after it."""
     try:
@@ -147,18 +174,16 @@ def main() -> None:
 
     with Database(args.db) as db:
         if args.only in (None, "stats"):
-            raw = nflverse.fetch(args.season)
-            run(db, raw, args.season)
-            run_rankings(db, rankings.fetch(), nflverse.build_games(raw), args.season)
-            if client := projections.FantasyProsClient.from_env():
-                _optional("projections", lambda: run_projections(db, client, args.season))
-            else:
-                log.warning("FANTASYPROS_API_KEY not set; projections skipped")
+            run_stats(db, args.season)
         if args.only == "news-fetch":
             run_news(db, news.fetch_all(), None, args.season, extract=False)
         if args.only == "news":
-            games = pl.DataFrame(db.games(args.season), schema=TABLES["games"].polars_schema())
-            _optional("rankings re-check", lambda: run_rankings(db, rankings.fetch(), games, args.season))
+            if stats_due(db.latest_stats_run(), datetime.now(UTC)):
+                log.info("daily stats refresh is due; running it first")
+                _optional("daily stats refresh", lambda: run_stats(db, args.season))
+            else:
+                games = pl.DataFrame(db.games(args.season), schema=TABLES["games"].polars_schema())
+                _optional("rankings re-check", lambda: run_rankings(db, rankings.fetch(), games, args.season))
         if args.only in (None, "news"):
             try:
                 llm: BudgetedLLM | None = BudgetedLLM(GeminiProvider(), db, "news", NEWS_DAILY_LLM_BUDGET)
