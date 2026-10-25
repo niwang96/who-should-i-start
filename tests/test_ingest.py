@@ -90,6 +90,7 @@ def make_raw(stats=(), snaps=(), opp=(), injuries=(), games=(), rosters=()):
         game_type=pl.String,
         week=pl.Int64,
         gameday=pl.String,
+        gametime=pl.String,
         home_team=pl.String,
         away_team=pl.String,
         spread_line=pl.Float64,
@@ -113,6 +114,7 @@ def game(week, home, away, gameday=None, game_type="REG"):
         game_type=game_type,
         week=week,
         gameday=gameday or f"2026-09-{week + 9:02d}",
+        gametime="13:00",
         home_team=home,
         away_team=away,
         spread_line=2.5,
@@ -351,7 +353,7 @@ def test_new_columns_are_added_to_an_existing_table(tmp_path):
     old.commit()
     old.close()
     with Database(path) as db:
-        assert db.query("select spread_line, total_line from games") == [{"spread_line": None, "total_line": None}]
+        assert db.query("select spread_line, gametime from games") == [{"spread_line": None, "gametime": None}]
         db.upsert(
             "games",
             [
@@ -360,6 +362,7 @@ def test_new_columns_are_added_to_an_existing_table(tmp_path):
                     season=2026,
                     week=7,
                     gameday=None,
+                    gametime=None,
                     home_team="PHI",
                     away_team="DAL",
                     spread_line=3.5,

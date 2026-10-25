@@ -202,6 +202,7 @@ def build_games(raw: RawNflverse) -> pl.DataFrame:
             "game_id",
             *_season_week(),
             pl.col("gameday").cast(pl.String),
+            pl.col("gametime").cast(pl.String),
             "home_team",
             "away_team",
             pl.col("spread_line").cast(pl.Float64),

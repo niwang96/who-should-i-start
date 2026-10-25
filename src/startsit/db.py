@@ -104,7 +104,8 @@ class GameRow(TypedDict):
     game_id: str
     season: int
     week: int
-    gameday: str | None
+    gameday: str | None  # YYYY-MM-DD, US Eastern
+    gametime: str | None  # kickoff, US Eastern "HH:MM"
     home_team: str
     away_team: str
     spread_line: float | None  # betting spread, home team's view: positive = home favored by that many
@@ -441,11 +442,6 @@ class Database:
             ),
         )
 
-    def cached_decision(self, cache_key: str) -> DecisionCacheRow | None:
-        return cast(
-            "DecisionCacheRow | None", self._one("SELECT * FROM decision_cache WHERE cache_key = ?", (cache_key,))
-        )
-
     def latest_news_status(self, player_id: str, since: str, until: str) -> NewsFactRow | None:
         """The newest news fact in [since, until] that states the player's game status."""
         return cast(
@@ -457,25 +453,13 @@ class Database:
             ),
         )
 
+    # --- players ---------------------------------------------------------------
+
     def all_players(self) -> list[PlayerRow]:
         return cast("list[PlayerRow]", self.query("SELECT * FROM players"))
 
-    # --- players ---------------------------------------------------------------
-
     def player(self, player_id: str) -> PlayerRow | None:
         return cast("PlayerRow | None", self._one("SELECT * FROM players WHERE player_id = ?", (player_id,)))
-
-    def players_named(self, name: str, team: str | None = None) -> list[PlayerRow]:
-        """Exact (case-insensitive) name matches, else substring matches; optionally on one team."""
-        team_filter, team_params = (" AND upper(team) = upper(?)", (team,)) if team else ("", ())
-        for pattern, op in ((name, "="), (f"%{name}%", "LIKE")):
-            rows = self.query(
-                f"SELECT * FROM players WHERE lower(name) {op} lower(?){team_filter} ORDER BY name, team",
-                (pattern, *team_params),
-            )
-            if rows:
-                return cast("list[PlayerRow]", rows)
-        return []
 
     def _player_row(
         self, table: str, player_id: str, season: int, condition: str, value: int, order_by: str | None = None
@@ -525,13 +509,13 @@ class Database:
             self._player_row("projections", player_id, season, "week = ?", week, "fetched_date"),
         )
 
-    def games(self, season: int) -> list[GameRow]:
-        return cast("list[GameRow]", self.query("SELECT * FROM games WHERE season = ? ORDER BY game_id", (season,)))
-
     def latest_rankings_week(self, season: int) -> int | None:
         return cast("int | None", self._scalar("SELECT max(week) AS w FROM rankings WHERE season = ?", (season,)))
 
     # --- schedule and stats ------------------------------------------------------
+
+    def games(self, season: int) -> list[GameRow]:
+        return cast("list[GameRow]", self.query("SELECT * FROM games WHERE season = ? ORDER BY game_id", (season,)))
 
     def latest_season(self) -> int | None:
         return cast("int | None", self._scalar("SELECT max(season) AS s FROM player_weeks"))
@@ -548,12 +532,13 @@ class Database:
             ),
         )
 
-    def team_last_game_day(self, season: int, team: str, before_week: int) -> str | None:
-        """Date (YYYY-MM-DD) of the team's latest game before `before_week`."""
+    def team_last_game(self, season: int, team: str, before_week: int) -> GameRow | None:
+        """The team's latest game before `before_week`."""
         return cast(
-            "str | None",
-            self._scalar(
-                f"SELECT max(gameday) AS d FROM games g WHERE season = ? AND week < ? AND {_PLAYS.format('?')}",
+            "GameRow | None",
+            self._one(
+                f"SELECT * FROM games g WHERE season = ? AND week < ? AND {_PLAYS.format('?')} "
+                "ORDER BY week DESC LIMIT 1",
                 (season, before_week, team, team),
             ),
         )
@@ -585,3 +570,10 @@ class Database:
         if row is None or row["weeks"] == 0:
             return None
         return int(row["games"])
+
+    # --- decisions -----------------------------------------------------------------
+
+    def cached_decision(self, cache_key: str) -> DecisionCacheRow | None:
+        return cast(
+            "DecisionCacheRow | None", self._one("SELECT * FROM decision_cache WHERE cache_key = ?", (cache_key,))
+        )

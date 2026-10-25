@@ -25,9 +25,8 @@ from typing import Any, Literal, cast
 
 from startsit import baseline
 from startsit.db import Database, DecisionCacheRow, utc_iso
-from startsit.evidence import EvidencePacket, PlayerLookupError, packet_for_names, question_parser
+from startsit.evidence import EvidencePacket, packet_from_args, question_parser
 from startsit.llm import BudgetedLLM, GeminiProvider, LLMError, QuotaExceeded
-from startsit.scoring import Scoring
 
 log = logging.getLogger("startsit.decide")
 
@@ -113,7 +112,7 @@ class Decision:
         return cls(**data)
 
     def to_text(self, packet: EvidencePacket) -> str:
-        names = {p.player_id: p.name for p in packet.players}
+        names = packet.names
         lines = [f"Start {names[self.pick]} ({self.confidence} confidence; {self.source})"]
         if self.note:
             lines.append(f"  Note: {self.note}")
@@ -148,17 +147,21 @@ def validate(raw: Any, packet: EvidencePacket) -> tuple[Decision | None, list[st
     if confidence not in CONFIDENCES:
         problems.append("confidence must be high, medium or low")
     factors = []
-    for f in raw.get("factors") or []:
+    known_ids = packet.item_ids
+    raw_factors = raw.get("factors")
+    raw_factors = raw_factors if isinstance(raw_factors, list) else []
+    for f in raw_factors:
         text = str(f.get("text", "")).strip() if isinstance(f, dict) else ""
-        ids = [str(i) for i in f.get("evidence_ids") or []] if isinstance(f, dict) else []
-        unknown = [i for i in ids if i not in packet.item_ids]
+        cited = f.get("evidence_ids") if isinstance(f, dict) else None
+        ids = list(dict.fromkeys(str(i) for i in cited)) if isinstance(cited, list) else []  # deduped, in order
+        unknown = [i for i in ids if i not in known_ids]
         if not text or not ids:
             problems.append("every factor needs text and at least one evidence id")
         elif unknown:
             problems.append(f"factor cites ids not in the packet: {', '.join(unknown)}")
         else:
             factors.append(Factor(text, ids))
-    if not 1 <= len(raw.get("factors") or []) <= 3:
+    if not 2 <= len(raw_factors) <= 3:
         problems.append("give 2 or 3 factors")
     disagreement = str(raw.get("baseline_disagreement", "")).strip()
     tied = packet.baseline_margin == 0
@@ -177,7 +180,7 @@ def validate(raw: Any, packet: EvidencePacket) -> tuple[Decision | None, list[st
 
 def baseline_decision(packet: EvidencePacket, note: str) -> Decision:
     """The code baseline as a decision, used when the LLM is unavailable or its answer fails checks."""
-    winner = next(p for p in packet.players if p.player_id == packet.baseline_pick)
+    winner = packet.player(packet.baseline_pick)
     ids = [i.id for i in winner.items if i.kind in ("consensus", "projection")] or [i.id for i in winner.items[:1]]
     margin = packet.baseline_margin
     confidence: Confidence = "high" if margin >= 5 else "medium" if margin >= 2 else "low"
@@ -201,7 +204,7 @@ def cap_confidence(decision: Decision, packet: EvidencePacket) -> Decision:
 
     Enforced in code because the model doesn't reliably follow this instruction.
     """
-    picked = next(p for p in packet.players if p.player_id == decision.pick)
+    picked = packet.player(decision.pick)
     if decision.confidence != "high" or picked.game_status not in baseline.CAUTION_STATUSES:
         return decision
     cap_note = f"Confidence capped at medium: {picked.name} is listed {picked.game_status}."
@@ -211,7 +214,7 @@ def cap_confidence(decision: Decision, packet: EvidencePacket) -> Decision:
 
 def with_citations(decision: Decision, packet: EvidencePacket) -> Decision:
     """Attach the source link of every cited evidence id, for the UI."""
-    urls = {i.id: i.source_url for p in packet.players for i in p.items}
+    urls = {i.id: i.source_url for i in packet.items}
     return replace(decision, cited_urls={i: urls.get(i) for f in decision.factors for i in f.evidence_ids})
 
 
@@ -259,10 +262,7 @@ def main() -> None:
     args = parser.parse_args()
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
     with Database(args.db) as db:
-        try:
-            packet = packet_for_names(db, args.players, cast(Scoring, args.scoring), args.season, args.week)
-        except (PlayerLookupError, ValueError) as e:
-            parser.exit(1, f"error: {e}\n")
+        packet = packet_from_args(parser, db, args)
         llm = None
         if not args.no_llm:
             try:

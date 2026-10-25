@@ -23,14 +23,16 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from startsit.db import Database, NewsExtractionRow, NewsFactRow, NewsItemRow, PlayerRow, utc_iso
+from startsit.db import Database, NewsExtractionRow, NewsFactRow, NewsItemRow, utc_iso
 from startsit.llm import BudgetedLLM, LLMError
+from startsit.names import PlayerMatcher
 
 log = logging.getLogger("startsit.ingest.news_extract")
 
 EVENTS = ("injury", "practice", "return", "role_change", "transaction", "suspension", "performance", "other")
 SEVERITIES = ("high", "medium", "low")
-GAME_STATUSES = ("out", "doubtful", "questionable", "active", "none")
+NO_STATUS = "none"
+GAME_STATUSES = ("out", "doubtful", "questionable", "active", NO_STATUS)
 CHUNK_SIZE = 40  # items per LLM call; ~40 headlines is a few thousand tokens
 LOOKBACK = timedelta(days=7)  # older items aren't worth a call
 MAX_ITEMS_PER_RUN = 400
@@ -41,7 +43,8 @@ Rules:
 - Only include QB, RB, WR or TE players named in the item, and only when the item reports a fact
   about their availability, health, role or a game already played. An item may produce no facts.
 - Skip: opinions, quotes, predictions, betting or fantasy picks ("smash spot", "TD scorer picks",
-  "expected to bounce back"), game previews and matchup hype, off-field news with no effect on
+  "expected to bounce back"), speculation about a future role ("may soon start", "could see more
+  snaps", "might take over"), game previews and matchup hype, off-field news with no effect on
   playing, and team-level news, coaches, defenders and kickers.
 - One fact per player per item. Use the player's full name as written and their team abbreviation
   if the item gives it (else an empty string).
@@ -53,7 +56,9 @@ Rules:
   major role change; medium = uncertain status or meaningful change; low = minor.
 - game_status: the player's status for their next game, only if the item states it: out (ruled
   out, inactive, placed on IR or suspended), doubtful, questionable, active (cleared, activated,
-  no injury designation, will play); otherwise none.
+  no injury designation, will play); otherwise none. An in-game update ("won't return", "out for
+  the rest of the game") is about the current game, not the next one: use none unless the item
+  also states the next game's status.
 - summary: at most 25 words, restating only what the item says."""
 
 RESPONSE_SCHEMA: dict[str, Any] = {
@@ -79,32 +84,6 @@ RESPONSE_SCHEMA: dict[str, Any] = {
     "required": ["facts"],
 }
 
-# Abbreviations news sources use that differ from nflverse's.
-TEAM_ALIASES = {"LAR": "LA", "JAC": "JAX", "WSH": "WAS", "ARZ": "ARI", "BLT": "BAL", "CLV": "CLE", "HST": "HOU"}
-_SUFFIX = re.compile(r"\b(jr|sr|ii|iii|iv|v)\b")
-
-
-def normalize_name(name: str) -> str:
-    """Lowercase, no punctuation or generational suffix: "Kenneth Walker III" -> "kenneth walker"."""
-    name = re.sub(r"[^a-z ]", "", name.lower().replace("-", " "))
-    return re.sub(r"\s+", " ", _SUFFIX.sub("", name)).strip()
-
-
-class PlayerMatcher:
-    """Matches an LLM-reported (name, team) to one player id, or None if missing or ambiguous."""
-
-    def __init__(self, players: Sequence[PlayerRow]):
-        self._by_name: dict[str, list[PlayerRow]] = defaultdict(list)
-        for p in players:
-            self._by_name[normalize_name(p["name"])].append(p)
-
-    def match(self, name: str, team: str = "") -> str | None:
-        candidates = self._by_name.get(normalize_name(name), [])
-        if len(candidates) > 1 and team:
-            team = TEAM_ALIASES.get(team.upper(), team.upper())
-            candidates = [p for p in candidates if (p["team"] or "").upper() == team]
-        return candidates[0]["player_id"] if len(candidates) == 1 else None
-
 
 @dataclass(frozen=True)
 class ExtractionResult:
@@ -122,18 +101,35 @@ def build_prompt(items: Sequence[NewsItemRow]) -> str:
     return "\n".join(lines)
 
 
+# Hedged wording: the model sometimes keeps speculation ("may soon be pressed to start") despite the prompt.
+_SPECULATIVE = re.compile(r"\b(may|might|could)\b", re.IGNORECASE)
+
+
+def is_noise(event: str, severity: str, summary: str, game_status: str | None) -> bool:
+    """Facts the prompt asks the model to skip but it sometimes keeps; they're never about playing time."""
+    if (event, severity) == ("other", "low"):
+        return True  # quotes and color
+    # Speculation about a role; a stated game status ("could return Sunday" + questionable) is kept.
+    return event in ("role_change", "other") and game_status is None and bool(_SPECULATIVE.search(summary))
+
+
 def facts_from_response(response: Any, items: Sequence[NewsItemRow], matcher: PlayerMatcher) -> list[NewsFactRow]:
     """Validate the LLM output against the chunk and attach code-owned fields (URL, date, player id)."""
     by_id = {f"N{i}": item for i, item in enumerate(items, 1)}
     facts: dict[tuple[str, str], NewsFactRow] = {}  # by (item_id, player_id)
-    for raw in (response or {}).get("facts", []):
+    raw_facts = response.get("facts") if isinstance(response, dict) else None
+    for raw in raw_facts if isinstance(raw_facts, list) else []:
+        if not isinstance(raw, dict):
+            continue
         item = by_id.get(str(raw.get("item_id", "")))
         event, severity = raw.get("event"), raw.get("severity")
         summary = str(raw.get("summary", "")).strip()
+        status = raw.get("game_status")
+        game_status = status if status in GAME_STATUSES and status != NO_STATUS else None
         if item is None or event not in EVENTS or severity not in SEVERITIES or not summary:
             continue
-        if (event, severity) == ("other", "low"):
-            continue  # quotes and color the model keeps despite the prompt; never about playing time
+        if is_noise(event, severity, summary, game_status):
+            continue
         player_id = matcher.match(str(raw.get("player", "")), str(raw.get("team", "")))
         if player_id is None:
             log.info("news fact for unmatched player %r (%s) skipped", raw.get("player"), item["item_id"])
@@ -147,7 +143,7 @@ def facts_from_response(response: Any, items: Sequence[NewsItemRow], matcher: Pl
             event=event,
             severity=severity,
             summary=summary,
-            game_status=status if (status := raw.get("game_status")) in GAME_STATUSES[:-1] else None,
+            game_status=game_status,
         )
     return list(facts.values())
 

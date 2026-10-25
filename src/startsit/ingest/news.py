@@ -9,7 +9,6 @@ from __future__ import annotations
 import html
 import logging
 import re
-import urllib.request
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -20,10 +19,10 @@ from zoneinfo import ZoneInfo
 from defusedxml.ElementTree import fromstring
 
 from startsit.db import NewsItemRow, utc_iso
+from startsit.http import get_bytes
 
 log = logging.getLogger("startsit.ingest.news")
 
-USER_AGENT = "who-should-i-start/0.1 (+https://github.com/niwang96/who-should-i-start)"
 SUMMARY_MAX_CHARS = 400
 ATOM = "{http://www.w3.org/2005/Atom}"
 
@@ -56,12 +55,10 @@ _US_LOCAL = re.compile(r"^(?:\w{3}, )?(\d{1,2} \w{3} \d{4} \d{1,2}:\d{2}:\d{2})(
 
 
 def fetch(feed: Feed, timeout: float = 30) -> bytes:
-    req = urllib.request.Request(feed.url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        body: bytes = resp.read()
+    body = get_bytes(feed.url, timeout=timeout)
     if not body.strip():
-        # ESPN answers GitHub Actions (datacenter IPs) with an empty 200 response.
-        raise ValueError(f"empty response (HTTP {resp.status})")
+        # ESPN answered GitHub Actions (datacenter IPs) with an empty 200 response; fail loudly if another does.
+        raise ValueError("empty response")
     return body
 
 

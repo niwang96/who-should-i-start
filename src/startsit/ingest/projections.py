@@ -5,7 +5,9 @@ with FantasyPros' own projected receptions, instead of our estimate from recent 
 
 The free key returns at most 10 rows per call and has a daily quota (~75 calls), so each run
 asks for the top players at each position by consensus rank, 10 per call (~26 calls), and
-stops early, keeping what it has, if the quota runs out. Rows are archived per fetch date.
+stops early, keeping what it has, if the quota runs out. Calls go in rank order across
+positions (every position's top 10, then 11-20, ...), so a cut-off loses the least-asked-about
+players. Rows are archived per fetch date.
 Players FantasyPros expects to sit (e.g. ruled out) get no projection at all.
 """
 
@@ -17,12 +19,13 @@ import os
 import time
 import urllib.error
 import urllib.parse
-import urllib.request
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from itertools import zip_longest
 from typing import Any
 
 from startsit.db import ProjectionRow, RankingRow
+from startsit.http import get_bytes
 
 log = logging.getLogger("startsit.ingest.projections")
 
@@ -60,10 +63,8 @@ class FantasyProsClient:
             if wait > 0:
                 self.sleep(wait)
             self._last_call = time.monotonic()
-            req = urllib.request.Request(url, headers={"x-api-key": self.api_key})
             try:
-                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                    return json.load(resp)
+                return json.loads(get_bytes(url, {"x-api-key": self.api_key}, self.timeout))
             except urllib.error.HTTPError as e:
                 if e.code != 429:
                     raise
@@ -86,22 +87,32 @@ def targets(rankings: Sequence[RankingRow]) -> dict[str, list[str]]:
     }
 
 
+def chunks_by_rank(wanted: dict[str, list[str]]) -> list[tuple[str, list[str]]]:
+    """(position, up to 10 ids) per call, top-ranked chunks of every position first.
+
+    If the quota runs out partway, what's lost is the lowest-ranked players of every
+    position, not a whole position.
+    """
+    per_position = [
+        [(pos, ids[i : i + CHUNK_SIZE]) for i in range(0, len(ids), CHUNK_SIZE)] for pos, ids in wanted.items()
+    ]
+    return [chunk for tier in zip_longest(*per_position) for chunk in tier if chunk is not None]
+
+
 def fetch(client: FantasyProsClient, season: int, week: int, wanted: dict[str, list[str]]) -> list[dict[str, Any]]:
     """Raw projection rows, 10 players per call; stops early (keeping what it has) when the quota runs out."""
     rows: list[dict[str, Any]] = []
-    for position, ids in wanted.items():
-        for start in range(0, len(ids), CHUNK_SIZE):
-            chunk = ids[start : start + CHUNK_SIZE]
-            try:
-                data = client.get(
-                    # Colon-separated: with commas the API silently ignores the filter.
-                    f"{season}/projections",
-                    {"position": position, "week": week, "players": ":".join(chunk)},
-                )
-            except FantasyProsQuotaExceeded as e:
-                log.warning("%s; keeping %s projections fetched so far", e, len(rows))
-                return rows
-            rows.extend(data.get("players") or [])
+    for position, chunk in chunks_by_rank(wanted):
+        try:
+            data = client.get(
+                # Colon-separated: with commas the API silently ignores the filter.
+                f"{season}/projections",
+                {"position": position, "week": week, "players": ":".join(chunk)},
+            )
+        except FantasyProsQuotaExceeded as e:
+            log.warning("%s; keeping %s projections fetched so far", e, len(rows))
+            return rows
+        rows.extend(data.get("players") or [])
     return rows
 
 
