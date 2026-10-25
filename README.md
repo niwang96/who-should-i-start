@@ -19,8 +19,8 @@ Three kinds of tests:
   These two kinds run on every pull request, and CI fails below 95% branch coverage.
 - **Live integration tests** (`tests/test_live.py`, `pytest -m live`): the real Gemini,
   FantasyPros, feeds, rankings file and nflverse, end to end through our code. They spend 2-4
-  Gemini calls and 1 FantasyPros call per run, so `integration.yml` runs them weekly, on demand,
-  and on pull requests that change code talking to an outside service. Without a key, that
+  Gemini calls and 1 FantasyPros call per run, so `integration.yml` runs them only on merges to
+  `main` that change code talking to an outside service, and when started by hand. Without a key, that
   service's test skips.
 
 ## Database

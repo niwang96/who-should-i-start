@@ -2,7 +2,7 @@
 
 They catch what the faked unit tests can't: a changed API response, a schema Gemini now
 rejects, a moved feed, renamed nflverse columns. Run them with `pytest -m live` (CI runs
-them weekly, on demand, and on pull requests that touch a source adapter).
+them only on merges to main that touch a source adapter, and when started by hand).
 
 Quota per run, kept as small as possible:
 - Gemini: 2 calls (one decision, one news extraction), at most 4 with validation retries;
