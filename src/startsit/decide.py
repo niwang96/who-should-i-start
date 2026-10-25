@@ -20,18 +20,31 @@ import hashlib
 import json
 import logging
 from dataclasses import asdict, dataclass, field, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 
 from startsit import baseline
 from startsit.db import Database, DecisionCacheRow, utc_iso
 from startsit.evidence import EvidencePacket, packet_from_args, question_parser
-from startsit.llm import BudgetedLLM, GeminiProvider, LLMError, QuotaExceeded
+from startsit.llm import (
+    BudgetedLLM,
+    GeminiProvider,
+    LLMError,
+    QuotaExceeded,
+    RateLimited,
+    VisitorLimit,
+    VisitorLimited,
+)
 
 log = logging.getLogger("startsit.decide")
 
 # Of the 500/day Gemini free tier: news gets 40, decisions this, the rest is headroom.
 DECIDE_DAILY_LLM_BUDGET = 400
+# New (uncached) AI answers per visitor; cached answers and baseline picks are unlimited.
+VISITOR_LIMITS = (
+    VisitorLimit(6, timedelta(minutes=10), "10 minutes"),
+    VisitorLimit(25, timedelta(days=1), "day"),
+)
 PROMPT_VERSION = 2  # bump when the prompt or schema changes, so cached answers aren't reused
 MAX_ATTEMPTS = 2
 
@@ -218,6 +231,16 @@ def with_citations(decision: Decision, packet: EvidencePacket) -> Decision:
     return replace(decision, cited_urls={i: urls.get(i) for f in decision.factors for i in f.evidence_ids})
 
 
+def decide_llm(db: Database, visitor: str | None = None) -> BudgetedLLM | None:
+    """The budgeted Gemini client for decisions (per visitor in the web app), or None without a key."""
+    try:
+        provider = GeminiProvider()
+    except LLMError as e:
+        log.warning("AI disabled: %s", e)
+        return None
+    return BudgetedLLM(provider, db, "decide", DECIDE_DAILY_LLM_BUDGET, visitor=visitor, visitor_limits=VISITOR_LIMITS)
+
+
 def decide(db: Database, packet: EvidencePacket, llm: BudgetedLLM | None) -> Decision:
     """The validated LLM pick (cached), else the baseline pick with a note saying why."""
 
@@ -241,6 +264,10 @@ def decide(db: Database, packet: EvidencePacket, llm: BudgetedLLM | None) -> Dec
             raw = llm.generate_json(attempt, response_schema(list(player_keys(packet))), SYSTEM_PROMPT)
         except QuotaExceeded:
             return fallback("Daily AI limit reached; showing the baseline pick.")
+        except RateLimited:
+            return fallback("The AI is busy right now; showing the baseline pick. Ask again in a minute.")
+        except VisitorLimited as e:
+            return fallback(f"You've reached the {e}; showing the baseline pick.")
         except LLMError as e:
             log.warning("decision call failed: %s", e)
             return fallback("AI unavailable; showing the baseline pick.")
@@ -263,12 +290,7 @@ def main() -> None:
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
     with Database(args.db) as db:
         packet = packet_from_args(parser, db, args)
-        llm = None
-        if not args.no_llm:
-            try:
-                llm = BudgetedLLM(GeminiProvider(), db, "decide", DECIDE_DAILY_LLM_BUDGET)
-            except LLMError as e:
-                log.warning("AI disabled: %s", e)
+        llm = None if args.no_llm else decide_llm(db)
         print(packet.to_text())
         print()
         print(decide(db, packet, llm).to_text(packet))

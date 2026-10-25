@@ -77,8 +77,18 @@ python -m startsit.decide "Josh Jacobs" "Saquon Barkley" --scoring ppr
 prints the evidence packet and the AI's pick: confidence, 2–3 deciding factors with the evidence
 ids they rely on, and, when it overrides the baseline, why. Code checks every cited id against the
 packet, retries once with the problems, and otherwise falls back to the baseline pick with a note
-(also when the daily AI budget of 400 calls is spent or Gemini is down). Answers are cached by the
-exact packet text, so a repeat question costs nothing until the evidence changes.
+(also when a limit below is hit or Gemini is down). Answers are cached by the exact packet text,
+so a repeat question costs nothing until the evidence changes.
+
+Free-tier protections (`startsit/llm.py`, enforced before every call by counting `llm_calls`):
+- daily budgets per purpose: 400 decisions, 40 news calls (Gemini allows 500/day);
+- one shared cap of 12 calls/minute across ingest and web requests (Gemini allows 15);
+- per visitor (web app): 6 new AI answers per 10 minutes and 25 per day, keyed by a salted hash
+  of the IP address (`VISITOR_SALT`); cached answers don't count.
+
+Each limit has its own note on the baseline fallback ("daily AI limit reached", "the AI is busy
+right now", "you've reached the limit of ..."). A Gemini 429 is read the same way: a per-day
+quota error counts as the daily limit, anything else as the per-minute one.
 
 ## Baseline and evidence packet (Stage 2)
 ```bash

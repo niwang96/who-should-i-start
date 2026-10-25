@@ -1,11 +1,11 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from startsit.baseline import BaselineScore
 from startsit.decide import Decision, Factor, build_prompt, decide, validate
 from startsit.evidence import EvidenceItem, EvidencePacket, PlayerEvidence, Question
-from startsit.llm import BudgetedLLM, FakeProvider, LLMError, QuotaExceeded
+from startsit.llm import BudgetedLLM, FakeProvider, LLMError, QuotaExceeded, RateLimited, VisitorLimit
 
 
 def make_packet(margin=6.4, a_points=13.1, b_points=19.5):
@@ -134,7 +134,8 @@ def test_decide_falls_back_to_the_baseline_after_two_bad_answers(db):
 @pytest.mark.parametrize(
     "error,note",
     [
-        (QuotaExceeded("rate limit"), "Daily AI limit reached; showing the baseline pick."),
+        (QuotaExceeded("daily limit"), "Daily AI limit reached; showing the baseline pick."),
+        (RateLimited("per minute"), "The AI is busy right now; showing the baseline pick. Ask again in a minute."),
         (LLMError("boom"), "AI unavailable; showing the baseline pick."),
     ],
 )
@@ -148,6 +149,21 @@ def test_decide_respects_the_daily_budget_and_works_without_an_llm(db):
     assert spent.note == "Daily AI limit reached; showing the baseline pick."
     none = decide(db, make_packet(margin=1.0), None)
     assert (none.source, none.confidence) == ("baseline", "low")
+
+
+def test_decide_stops_a_visitor_at_their_limit_but_still_serves_cached_answers(db):
+    def visitor_llm(provider):
+        limits = [VisitorLimit(1, timedelta(minutes=10), "10 minutes")]
+        return BudgetedLLM(provider, db, "decide", 10, visitor="v1", visitor_limits=limits)
+
+    first = decide(db, make_packet(), visitor_llm(FakeProvider(responses=[answer()])))
+    assert first.source == "llm"
+    assert decide(db, make_packet(), visitor_llm(FakeProvider())).source == "cache"  # no call, no limit
+    other = decide(db, make_packet(margin=6.5), visitor_llm(FakeProvider(responses=[answer()])))
+    assert (other.source, other.note) == (
+        "baseline",
+        "You've reached the limit of 1 new AI answers per 10 minutes; showing the baseline pick.",
+    )
 
 
 def test_decision_round_trips_through_json():

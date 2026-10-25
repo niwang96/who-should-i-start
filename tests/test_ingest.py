@@ -373,6 +373,23 @@ def test_new_columns_are_added_to_an_existing_table(tmp_path):
         assert db.team_game(2026, 7, "DAL")["total_line"] == 49.5
 
 
+def test_visitor_column_is_added_to_an_old_llm_calls_table(tmp_path):
+    path = tmp_path / "old.db"
+    old = sqlite3.connect(path)  # llm_calls from before per-visitor limits
+    old.execute(
+        "CREATE TABLE llm_calls (purpose TEXT NOT NULL, model TEXT NOT NULL, ok INTEGER NOT NULL, "
+        "called_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+    )
+    old.execute("INSERT INTO llm_calls (purpose, model, ok, called_at) VALUES ('news', 'm', 1, '2026-10-25 01:00:00')")
+    old.commit()
+    old.close()
+    now = datetime(2026, 10, 25, 2, 0, tzinfo=UTC)
+    with Database(path) as db:
+        db.record_llm_call("decide", "m", True, now, visitor="v1")
+        assert db.llm_calls_since(datetime(2026, 10, 25, tzinfo=UTC)) == 2
+        assert db.llm_calls_since(now, visitor="v1") == 1
+
+
 def test_optional_steps_log_failures_without_stopping(caplog):
     from startsit.ingest.__main__ import _optional
 

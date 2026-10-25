@@ -1,12 +1,23 @@
 import io
 import json
 import urllib.error
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from startsit import llm
-from startsit.llm import BudgetedLLM, FakeProvider, GeminiProvider, LLMError, QuotaExceeded, utc_day_start
+from startsit.llm import (
+    BudgetedLLM,
+    FakeProvider,
+    GeminiProvider,
+    LLMError,
+    QuotaExceeded,
+    RateLimited,
+    VisitorLimit,
+    VisitorLimited,
+    utc_day_start,
+    visitor_id,
+)
 
 
 class FakeResponse(io.BytesIO):
@@ -37,19 +48,32 @@ def test_gemini_sends_schema_and_parses_json(monkeypatch):
     assert sent["body"]["systemInstruction"] == {"parts": [{"text": "rules"}]}
 
 
-@pytest.mark.parametrize("code,error,attempts", [(429, QuotaExceeded, 1), (503, LLMError, 2), (400, LLMError, 1)])
-def test_gemini_maps_http_errors_and_retries_overload_once(monkeypatch, code, error, attempts):
+PER_DAY = b'{"error": {"code": 429, "details": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]}}'
+PER_MINUTE = b'{"error": {"code": 429, "details": [{"quotaId": "GenerateRequestsPerMinutePerProjectPerModel"}]}}'
+
+
+@pytest.mark.parametrize(
+    "code,body,error,attempts",
+    [
+        (429, PER_DAY, QuotaExceeded, 1),
+        (429, PER_MINUTE, RateLimited, 1),
+        (503, b"busy", LLMError, 2),
+        (400, b"bad", LLMError, 1),
+    ],
+)
+def test_gemini_maps_http_errors_and_retries_overload_once(monkeypatch, code, body, error, attempts):
     calls = []
 
     def fail(req, timeout):
         calls.append(1)
-        raise urllib.error.HTTPError(req.full_url, code, "err", {}, io.BytesIO(b'{"error": "nope"}'))
+        raise urllib.error.HTTPError(req.full_url, code, "err", {}, io.BytesIO(body))
 
     monkeypatch.setattr(llm.urllib.request, "urlopen", fail)
     monkeypatch.setattr(GeminiProvider, "RETRY_DELAY_SECONDS", 0)
-    with pytest.raises(error):
+    with pytest.raises(error) as raised:
         GeminiProvider(api_key="k").generate_json("p", {})
     assert len(calls) == attempts
+    assert error is LLMError or type(raised.value) is error
 
 
 def test_gemini_recovers_when_the_retry_succeeds(monkeypatch):
@@ -102,4 +126,48 @@ def test_budgeted_llm_logs_calls_and_enforces_the_daily_budget(db):
 
 
 def test_utc_day_start():
-    assert utc_day_start(datetime(2026, 10, 24, 23, 59, tzinfo=UTC)) == "2026-10-24 00:00:00"
+    assert utc_day_start(datetime(2026, 10, 24, 23, 59, tzinfo=UTC)) == datetime(2026, 10, 24, tzinfo=UTC)
+
+
+class Clock:
+    def __init__(self, now):
+        self.now = now
+
+    def __call__(self):
+        return self.now
+
+
+def test_the_per_minute_cap_is_shared_across_purposes(db):
+    clock = Clock(datetime(2026, 10, 25, 12, 0, 0, tzinfo=UTC))
+    news = BudgetedLLM(FakeProvider(respond=lambda p: {}), db, "news", 100, per_minute=2, clock=clock)
+    decide = BudgetedLLM(FakeProvider(respond=lambda p: {}), db, "decide", 100, per_minute=2, clock=clock)
+    news.generate_json("p", {})
+    decide.generate_json("p", {})
+    with pytest.raises(RateLimited, match="2 LLM calls per minute"):
+        decide.generate_json("p", {})
+    clock.now += timedelta(seconds=61)
+    assert decide.generate_json("p", {}) == {}  # the window moved on
+
+
+def test_visitor_limits_count_only_that_visitors_calls(db):
+    clock = Clock(datetime(2026, 10, 25, 12, 0, 0, tzinfo=UTC))
+    limits = [VisitorLimit(2, timedelta(minutes=10), "10 minutes"), VisitorLimit(3, timedelta(days=1), "day")]
+
+    def llm(visitor):
+        return BudgetedLLM(FakeProvider(respond=lambda p: {}), db, "decide", 100, visitor, limits, clock=clock)
+
+    llm("a").generate_json("p", {})
+    llm("a").generate_json("p", {})
+    with pytest.raises(VisitorLimited, match="2 new AI answers per 10 minutes"):
+        llm("a").generate_json("p", {})
+    llm("b").generate_json("p", {})  # another visitor is unaffected
+    clock.now += timedelta(minutes=11)
+    llm("a").generate_json("p", {})
+    with pytest.raises(VisitorLimited, match="3 new AI answers per day"):
+        llm("a").generate_json("p", {})
+    BudgetedLLM(FakeProvider(respond=lambda p: {}), db, "news", 100, clock=clock).generate_json("p", {})  # no visitor
+
+
+def test_visitor_id_hashes_the_address_with_a_salt():
+    assert visitor_id("1.2.3.4", "s") == visitor_id("1.2.3.4", "s") != visitor_id("1.2.3.4", "t")
+    assert "1.2.3.4" not in visitor_id("1.2.3.4", "s") and len(visitor_id("1.2.3.4", "s")) == 16

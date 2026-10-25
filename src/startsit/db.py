@@ -140,6 +140,11 @@ def utc_iso(dt: datetime) -> str:
     return dt.astimezone(UTC).isoformat(timespec="seconds")
 
 
+def utc_timestamp(dt: datetime) -> str:
+    """The format of the TIMESTAMP log columns (llm_calls.called_at): 'YYYY-MM-DD HH:MM:SS' in UTC."""
+    return dt.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S")
+
+
 class NewsItemRow(TypedDict):
     """One headline from an RSS feed: headline, summary and link only (CLAUDE.md: link out, don't copy articles)."""
 
@@ -267,13 +272,20 @@ INGEST_RUNS_DDL = """CREATE TABLE IF NOT EXISTS ingest_runs (
     finished_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );"""
 
-# Every LLM request, so daily free-tier budgets can be enforced.
+# Every LLM request, so free-tier limits (per day, per minute, per visitor) can be enforced.
+# called_at is written by the caller (UTC), so limits use one clock.
 LLM_CALLS_DDL = """CREATE TABLE IF NOT EXISTS llm_calls (
     purpose    TEXT NOT NULL,
     model      TEXT NOT NULL,
     ok         INTEGER NOT NULL,
-    called_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);"""
+    called_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    visitor    TEXT
+);
+CREATE INDEX IF NOT EXISTS llm_calls_called_at ON llm_calls (called_at);"""
+
+# Columns added to the hand-written tables after they first shipped: (table, column, SQL type).
+# Like TABLES columns, they're added to existing databases on connect and must be nullable.
+LATER_COLUMNS = (("llm_calls", "visitor", "TEXT"),)
 
 SCHEMA = "\n\n".join([*(t.ddl() for t in TABLES.values()), INGEST_RUNS_DDL, LLM_CALLS_DDL])
 ALL_TABLE_NAMES = (*TABLES, "ingest_runs", "llm_calls")
@@ -323,7 +335,7 @@ class Database:
             for r in rows:
                 out.setdefault(r["t"], set()).add(r["c"])
             return out
-        return {t: {r["name"] for r in self.query(f"PRAGMA table_info({t})")} for t in TABLES}
+        return {t: {r["name"] for r in self.query(f"PRAGMA table_info({t})")} for t in ALL_TABLE_NAMES}
 
     def _add_missing_columns(self) -> None:
         """Schema migration for added columns: CREATE TABLE IF NOT EXISTS leaves existing tables alone.
@@ -339,6 +351,9 @@ class Database:
                         f"new column {table.name}.{column} must be nullable to be added to existing rows"
                     )
                 self.execute(f"ALTER TABLE {table.name} ADD COLUMN {table.column_ddl(column)}")
+        for name, column, sql_type in LATER_COLUMNS:
+            if column not in existing.get(name, set()):
+                self.execute(f"ALTER TABLE {name} ADD COLUMN {column} {sql_type}")
 
     def __enter__(self) -> Database:
         return self
@@ -410,13 +425,22 @@ class Database:
             (limit,),
         )
 
-    def record_llm_call(self, purpose: str, model: str, ok: bool) -> None:
-        self.execute("INSERT INTO llm_calls (purpose, model, ok) VALUES (?, ?, ?)", (purpose, model, int(ok)))
+    def record_llm_call(
+        self, purpose: str, model: str, ok: bool, called_at: datetime, visitor: str | None = None
+    ) -> None:
+        self.execute(
+            "INSERT INTO llm_calls (purpose, model, ok, called_at, visitor) VALUES (?, ?, ?, ?, ?)",
+            (purpose, model, int(ok), utc_timestamp(called_at), visitor),
+        )
 
-    def llm_calls_since(self, since: str, purpose: str | None = None) -> int:
-        """LLM requests made at or after `since` (UTC, 'YYYY-MM-DD HH:MM:SS'), optionally for one purpose."""
-        purpose_filter, params = (" AND purpose = ?", (since, purpose)) if purpose else ("", (since,))
-        return int(self._scalar(f"SELECT count(*) AS n FROM llm_calls WHERE called_at >= ?{purpose_filter}", params))
+    def llm_calls_since(self, since: datetime, purpose: str | None = None, visitor: str | None = None) -> int:
+        """LLM requests made at or after `since`, optionally only for one purpose and/or one visitor."""
+        sql, params = "SELECT count(*) AS n FROM llm_calls WHERE called_at >= ?", [utc_timestamp(since)]
+        for column, value in (("purpose", purpose), ("visitor", visitor)):
+            if value is not None:
+                sql += f" AND {column} = ?"
+                params.append(value)
+        return int(self._scalar(sql, params))
 
     # --- news --------------------------------------------------------------------
 

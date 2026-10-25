@@ -127,7 +127,7 @@ def test_extract_news_caches_by_url_and_never_resends(news_db):
     # A second run has nothing new to send.
     again = extract_news(news_db, budgeted(news_db, provider), NOW)
     assert (again.items_processed, again.calls) == (0, 0)
-    assert news_db.llm_calls_since("2000-01-01 00:00:00", "news") == 1
+    assert news_db.llm_calls_since(datetime(2000, 1, 1, tzinfo=UTC), "news") == 1
 
 
 def test_extract_news_chunks_and_stops_at_the_budget(news_db):
