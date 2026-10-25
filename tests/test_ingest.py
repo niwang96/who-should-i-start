@@ -335,8 +335,9 @@ def test_run_news_stores_items_and_extracts_facts(db):
     counts = run_news(db, bodies, BudgetedLLM(provider, db, "news", 5), 2026, now)
     assert counts == {"news_items": 1, "news_extracted": 1, "news_facts": 1, "llm_calls": 1}
     assert db.query("select player_id, summary from news_facts") == [{"player_id": "NACUA", "summary": "Q."}]
-    # Without an LLM the items are still stored.
+    # Without an LLM, or in fetch-only mode, the items are still stored.
     assert run_news(db, bodies, None, 2026, now) == {"news_items": 1}
+    assert run_news(db, bodies, BudgetedLLM(provider, db, "news", 5), 2026, now, extract=False) == {"news_items": 1}
 
 
 def test_new_columns_are_added_to_an_existing_table(tmp_path):
@@ -367,3 +368,13 @@ def test_new_columns_are_added_to_an_existing_table(tmp_path):
             ],
         )
         assert db.team_game(2026, 7, "DAL")["total_line"] == 49.5
+
+
+def test_optional_steps_log_failures_without_stopping(caplog):
+    from startsit.ingest.__main__ import _optional
+
+    def boom():
+        raise RuntimeError("source down")
+
+    _optional("rankings re-check", boom)
+    assert "rankings re-check failed; continuing" in caplog.text

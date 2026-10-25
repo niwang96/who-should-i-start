@@ -34,12 +34,12 @@ class Feed:
     url: str
 
 
-# Verified Oct 24 2026 from the Claude Code env. RotoWire's public feed only ever lists its
-# latest 5 player blurbs (no paging or filters), so frequent polling matters most for it.
+# Verified Oct 24 2026. RotoWire's public feed only ever lists its latest 5 player blurbs (no
+# paging or filters), so it's polled every 15 minutes at peak times. ESPN's feed was dropped:
+# it answers GitHub Actions (datacenter IPs) with an empty bot-check response.
 FEEDS = [
     Feed("RotoWire", "https://www.rotowire.com/rss/news.php?sport=NFL"),
     Feed("ProFootballTalk", "https://www.nbcsports.com/profootballtalk.rss"),
-    Feed("ESPN", "https://www.espn.com/espn/rss/nfl/news"),
     Feed("CBS Sports", "https://www.cbssports.com/rss/headlines/nfl/"),
 ]
 

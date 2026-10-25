@@ -176,7 +176,7 @@ def test_packet_converts_scoring_and_picks_by_consensus(seeded):
         "Week 7 2026, half-PPR scoring. Baseline (100% FantasyPros consensus) favors Puka Nacua by 6.4 pts."
     )
     assert "E1 [consensus] FantasyPros consensus WR16 vs. DAL (avg rank 16.2, sd 2.53, range 9-25" in text
-    assert "about 13.1 half-PPR (minus 0.5 x 4.0 expected catches/game)" in text
+    assert "about 13.1 half-PPR (minus 0.5 x 4.0 expected catches/game from recent usage)" in text
     assert "85% of snaps (10 percentage points down vs prior 3)" in text
     assert "12.0 expected vs 15.0 actual half-PPR fantasy pts/game" in text
     assert "10%" not in text  # week-7 usage (10% snaps) not leaked
@@ -252,8 +252,9 @@ def test_parse_player_arg(arg, expected):
     assert parse_player_arg(arg) == expected
 
 
-def news_fact(player_id, published_at, summary, url_suffix, event="injury", severity="medium"):
+def news_fact(player_id, published_at, summary, url_suffix, event="injury", severity="medium", game_status=None):
     return dict(
+        game_status=game_status,
         item_id=f"RotoWire:{url_suffix}",
         player_id=player_id,
         url=f"https://example.com/news/{url_suffix}",
@@ -303,3 +304,56 @@ def test_matchup_fact_uses_betting_lines_from_each_teams_side(seeded):
 def test_no_matchup_fact_without_lines(seeded):
     p = build_packet(seeded, ["SMITH", "NACUA"], "ppr", 2026, 7)
     assert not [i for pl in p.players for i in pl.items if i.kind == "matchup"]
+
+
+def projection(player_id, receptions, fetched_date="2026-10-24"):
+    return dict(
+        season=2026,
+        week=7,
+        fetched_date=fetched_date,
+        fantasypros_id=f"fp-{player_id}",
+        player_id=player_id,
+        points_ppr=None,
+        points_half=None,
+        points_std=None,
+        receptions=receptions,
+    )
+
+
+def test_fantasypros_projected_catches_drive_the_conversion(seeded):
+    seeded.upsert("projections", [projection("SMITH", 9.0, "2026-10-23"), projection("SMITH", 5.0)])
+    p = build_packet(seeded, ["SMITH", "NACUA"], "half", 2026, 7)
+    assert p.players[0].score.points == 12.6  # 15.1 - 0.5 x 5.0 (latest fetch), not usage's 4.0
+    assert "minus 0.5 x 5.0 FantasyPros projected catches" in p.to_text()
+
+
+def test_this_weeks_news_status_beats_stale_roster_and_last_weeks_news(seeded):
+    as_of = datetime(2026, 10, 25, 0, 0, tzinfo=UTC)
+    seeded.upsert(
+        "news_facts",
+        [
+            news_fact(
+                "JACOBS",
+                "2026-10-24T20:09:00+00:00",
+                "Exemption removed, expected to play.",
+                7,
+                event="return",
+                game_status="active",
+            ),
+            news_fact("NACUA", "2026-10-24T18:00:00+00:00", "Ruled out for Sunday.", 8, game_status="out"),
+        ],
+    )
+    p = build_packet(seeded, ["JACOBS", "NACUA", "SMITH"], "ppr", 2026, 7, as_of=as_of)
+    jacobs, nacua, smith = p.players
+    assert jacobs.score.points == 12.0 and jacobs.score.note is None  # news "active" beats the exempt roster
+    assert (nacua.score.points, nacua.score.note) == (0.0, "ruled out (news)")
+    assert nacua.game_status == "out" and smith.game_status is None
+
+
+def test_news_status_from_before_the_teams_last_game_is_ignored(seeded):
+    seeded.upsert("games", [dict(game(6, "LV", "LA"), gameday="2026-10-18")])
+    seeded.upsert(
+        "news_facts", [news_fact("NACUA", "2026-10-18T12:00:00+00:00", "Out for Sunday.", 9, game_status="out")]
+    )
+    p = build_packet(seeded, ["NACUA", "SMITH"], "ppr", 2026, 7, as_of=datetime(2026, 10, 22, tzinfo=UTC))
+    assert p.players[0].score.points == 24.5  # last week's "out" doesn't count this week

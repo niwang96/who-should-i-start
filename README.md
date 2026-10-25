@@ -47,6 +47,8 @@ Tables (QB/RB/WR/TE, regular season only):
 - `rankings` — FantasyPros weekly expert consensus (ECR) for every ranked QB/RB/WR/TE, one
   archived copy per daily scrape: average/best/worst rank, spread, start/sit grade, and
   FantasyPros' projected PPR points. Read from the DynastyProcess copy of FantasyPros' rankings.
+- `projections` — FantasyPros per-format projections and projected receptions for ~240 top players,
+  one archived copy per daily fetch (needs `FANTASYPROS_API_KEY`)
 - `ingest_runs` — row counts per run
 
 Expected points come from nflverse FF Opportunity, which is PPR-scored; half/standard are
@@ -54,15 +56,17 @@ derived by subtracting 0.5 / 1.0 × expected receptions.
 
 ## News (Stage 1, text)
 ```bash
-python -m startsit.ingest --only news   # fetch RSS, extract player facts with Gemini
+python -m startsit.ingest --only news        # fetch RSS, extract player facts with Gemini
+python -m startsit.ingest --only news-fetch  # fetch RSS only (no LLM), for frequent polling
 ```
 Feeds (`startsit/ingest/news.py`) are stored as headline + summary + link only. Items not yet
 processed are sent to Gemini in batches of ~40 (`startsit/ingest/news_extract.py`); the model
 returns, per player, an event type, a severity and a short restatement, and code attaches the
 URL, date and player id (names it can't match to a player are dropped). Every processed URL is
-cached in `news_extractions` (keyed by the feed's guid, else the link), so no item is sent twice. News uses at most 40 LLM calls a day
-(`llm_calls` logs every call). GitHub Actions runs the news step hourly and the full ingest
-daily.
+cached in `news_extractions` (keyed by the feed's guid, else the link), so no item is sent twice. Facts also record a game
+status (out/doubtful/questionable/active) when the item states one. News uses at most 40 LLM calls a
+day (`llm_calls` logs every call). GitHub Actions fetches feeds every 15 minutes at peak times,
+runs the news step hourly, and runs the full ingest (including FantasyPros projections) daily.
 
 Tables: `news_items`, `news_extractions` (the per-URL LLM cache), `news_facts`, `llm_calls`.
 

@@ -171,6 +171,21 @@ class NewsFactRow(TypedDict):
     event: str  # see startsit.ingest.news_extract.EVENTS
     severity: str  # high | medium | low
     summary: str  # restates only the item's own text
+    game_status: str | None  # out | doubtful | questionable | active, when the item states one
+
+
+class ProjectionRow(TypedDict):
+    """FantasyPros per-format projections, one archived copy per fetch date (see startsit.ingest.projections)."""
+
+    season: int
+    week: int
+    fetched_date: str
+    fantasypros_id: str
+    player_id: str | None
+    points_ppr: float | None
+    points_half: float | None
+    points_std: float | None
+    receptions: float | None  # projected catches
 
 
 class DecisionCacheRow(TypedDict):
@@ -238,6 +253,7 @@ TABLES: dict[str, Table] = {
         Table("news_extractions", NewsExtractionRow, ("item_id",)),
         Table("news_facts", NewsFactRow, ("item_id", "player_id")),
         Table("decision_cache", DecisionCacheRow, ("cache_key",)),
+        Table("projections", ProjectionRow, ("season", "week", "fetched_date", "fantasypros_id")),
     )
 }
 
@@ -430,6 +446,17 @@ class Database:
             "DecisionCacheRow | None", self._one("SELECT * FROM decision_cache WHERE cache_key = ?", (cache_key,))
         )
 
+    def latest_news_status(self, player_id: str, since: str, until: str) -> NewsFactRow | None:
+        """The newest news fact in [since, until] that states the player's game status."""
+        return cast(
+            "NewsFactRow | None",
+            self._one(
+                "SELECT * FROM news_facts WHERE player_id = ? AND published_at >= ? AND published_at <= ? "
+                "AND game_status IS NOT NULL ORDER BY published_at DESC LIMIT 1",
+                (player_id, since, until),
+            ),
+        )
+
     def all_players(self) -> list[PlayerRow]:
         return cast("list[PlayerRow]", self.query("SELECT * FROM players"))
 
@@ -481,6 +508,26 @@ class Database:
             "RankingRow | None", self._player_row("rankings", player_id, season, "week = ?", week, "scrape_date")
         )
 
+    def rankings_for_week(self, season: int, week: int) -> list[RankingRow]:
+        """Every player's ranking from the latest scrape of the week."""
+        return cast(
+            "list[RankingRow]",
+            self.query(
+                "SELECT * FROM rankings WHERE season = ? AND week = ? AND scrape_date = "
+                "(SELECT max(scrape_date) FROM rankings WHERE season = ? AND week = ?)",
+                (season, week, season, week),
+            ),
+        )
+
+    def latest_projection(self, player_id: str, season: int, week: int) -> ProjectionRow | None:
+        return cast(
+            "ProjectionRow | None",
+            self._player_row("projections", player_id, season, "week = ?", week, "fetched_date"),
+        )
+
+    def games(self, season: int) -> list[GameRow]:
+        return cast("list[GameRow]", self.query("SELECT * FROM games WHERE season = ? ORDER BY game_id", (season,)))
+
     def latest_rankings_week(self, season: int) -> int | None:
         return cast("int | None", self._scalar("SELECT max(week) AS w FROM rankings WHERE season = ?", (season,)))
 
@@ -498,6 +545,16 @@ class Database:
             self._one(
                 f"SELECT * FROM games g WHERE season = ? AND week = ? AND {_PLAYS.format('?')}",
                 (season, week, team, team),
+            ),
+        )
+
+    def team_last_game_day(self, season: int, team: str, before_week: int) -> str | None:
+        """Date (YYYY-MM-DD) of the team's latest game before `before_week`."""
+        return cast(
+            "str | None",
+            self._scalar(
+                f"SELECT max(gameday) AS d FROM games g WHERE season = ? AND week < ? AND {_PLAYS.format('?')}",
+                (season, before_week, team, team),
             ),
         )
 
