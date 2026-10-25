@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Who Should I Start? — fantasy football start/sit</title>
+  <meta name="description" content="Pick between fantasy football players with expert consensus, usage, news and an AI explanation that cites its evidence.">
+  <meta name="htmx-config" content='{"includeIndicatorStyles": false}'>
+  <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}">
+  <script src="{{ url_for('static', path='htmx-2.0.4.min.js') }}" defer></script>
+</head>
+<body>
+  <header>
+    <h1><a href="/">Who Should I Start?</a></h1>
+    {% if info %}
+    <p class="week">Answering for <strong>Week {{ info.week }}, {{ info.season }}</strong></p>
+    <p class="freshness">
+      Rankings as of {{ info.rankings_as_of or "unknown" }}
+      · News checked {{ info.news_as_of[:16]|replace("T", " ") if info.news_as_of else "never" }} UTC
+      · Stats updated {{ info.stats_as_of[:16] if info.stats_as_of else "unknown" }} UTC
+    </p>
+    {% endif %}
+  </header>
+
+  <main>
+    <form action="/ask" method="post" hx-post="/ask" hx-target="#result" hx-indicator="#asking">
+      <fieldset>
+        <legend>Players</legend>
+        {% for i in range(max_players) %}
+        {% set value = players[i] if i < players|length else "" %}
+        <label for="player-{{ i }}">Player {{ i + 1 }}{% if i >= 2 %} <span class="optional">(optional)</span>{% endif %}</label>
+        <input id="player-{{ i }}" name="players" value="{{ value }}" list="player-options"
+               autocomplete="off" maxlength="60" placeholder="{{ ['e.g. Puka Nacua', 'e.g. DeVonta Smith', '', ''][i] }}"
+               {% if i < 2 %}required{% endif %}
+               hx-get="/players" hx-trigger="input changed delay:250ms" hx-target="#player-options" hx-sync="this:replace">
+        {% endfor %}
+        <datalist id="player-options"></datalist>
+        <p class="hint">Same name on two teams? Add the team: <code>Ryan Miller (NE)</code></p>
+      </fieldset>
+
+      <fieldset class="scoring">
+        <legend>League scoring</legend>
+        {% for s in scorings %}
+        <label class="radio"><input type="radio" name="scoring" value="{{ s }}" {% if s == scoring %}checked{% endif %}> {{ scoring_labels[s] }}</label>
+        {% endfor %}
+      </fieldset>
+
+      <button type="submit">Who should I start?</button>
+      <span id="asking" class="htmx-indicator" role="status">Weighing the evidence…</span>
+    </form>
+
+    <section id="result" aria-live="polite">
+      {% if packet or error %}{% include "_result.html" %}{% endif %}
+    </section>
+
+    <section class="about">
+      <h2>How it works</h2>
+      <p>Code gathers the evidence for each player: the FantasyPros expert consensus, recent usage
+      (snaps, targets, expected points), betting lines, the injury report and this week's news. It
+      computes a baseline pick from the consensus projection. An AI then makes the call, citing the
+      numbered evidence it used, and must explain itself if it disagrees with the baseline. It may
+      only use the listed facts. If the AI is busy or unavailable, you get the baseline pick.</p>
+    </section>
+  </main>
+
+  <footer>
+    <p>Expert consensus rankings and projections: <a href="https://www.fantasypros.com/" rel="noopener">FantasyPros</a>.
+    Stats, snaps, injuries, schedules and betting lines: <a href="https://github.com/nflverse" rel="noopener">nflverse</a>.
+    News: RotoWire, ProFootballTalk and CBS Sports (linked with each item). AI: Google Gemini.</p>
+    <p>A free, non-commercial project, not affiliated with FantasyPros or the NFL. For fun, not betting advice.
+    <a href="https://github.com/niwang96/who-should-i-start" rel="noopener">Source code</a>.</p>
+  </footer>
+</body>
+</html>

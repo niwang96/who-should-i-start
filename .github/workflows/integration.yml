@@ -36,5 +36,5 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
-      - run: pip install -e '.[dev]'
+      - run: pip install -e '.[dev,ingest]'
       - run: pytest -m live -v

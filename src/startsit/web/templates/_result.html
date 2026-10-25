@@ -1,0 +1,47 @@
+{% if error %}
+<div class="error" role="alert">{{ error }}</div>
+{% else %}
+{% set pick = packet.player(decision.pick) %}
+<article class="answer">
+  <p class="verdict">Start <strong>{{ pick.name }}</strong></p>
+  <p class="meta">
+    <span class="confidence {{ decision.confidence }}">{{ decision.confidence|capitalize }} confidence</span>
+    <span class="source">{{ source_labels[decision.source] }}</span>
+    <span>{{ scoring_labels[packet.question.scoring] }}, week {{ packet.question.week }}</span>
+  </p>
+  {% if decision.note %}<p class="note">{{ decision.note }}</p>{% endif %}
+
+  <h2>Why</h2>
+  <ul class="factors">
+    {% for f in decision.factors %}
+    <li>{{ f.text }}
+      {% for id in f.evidence_ids %}<a class="cite" href="#{{ id }}">{{ id }}</a>{% endfor %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% if decision.baseline_disagreement %}
+  <p class="disagreement"><strong>Differs from the baseline ({{ names[decision.baseline_pick] }}):</strong>
+    {{ decision.baseline_disagreement }}</p>
+  {% endif %}
+
+  {% for p in packet.players if p.game_started %}
+  <p class="warning">{{ p.name }}'s game already kicked off ({{ p.kickoff|eastern }}). Most leagues have locked that spot.</p>
+  {% endfor %}
+</article>
+
+<section class="evidence">
+  <h2>The evidence</h2>
+  {% for p in packet.players %}
+  <div class="player{% if p.player_id == decision.pick %} picked{% endif %}">
+    <h3>{{ p.name }} <span class="pos">{{ p.position }}, {{ p.team or "free agent" }}</span></h3>
+    <p class="baseline">Baseline {{ "%.1f"|format(p.score.points) }} pts{% if p.score.note %} ({{ p.score.note }}){% endif %}</p>
+    <ul>
+      {% for item in p.items %}
+      <li id="{{ item.id }}"><span class="id">{{ item.id }}</span> <span class="kind">{{ kind_labels[item.kind] }}</span>
+        {{ item.text }}{% if item.source_url %} <a href="{{ item.source_url }}" rel="noopener nofollow" target="_blank">source</a>{% endif %}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endfor %}
+</section>
+{% endif %}

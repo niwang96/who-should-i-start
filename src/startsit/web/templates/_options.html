@@ -1,0 +1,2 @@
+{% for r in rows %}<option value="{{ r.name }}{% if r.team %} ({{ r.team }}){% endif %}">{{ r.position }}{% if r.team %}, {{ r.team }}{% endif %}</option>
+{% endfor %}

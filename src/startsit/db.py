@@ -8,6 +8,9 @@ Callers use the named query methods below, so they never depend on the backend.
 Each table is defined once, as a TypedDict of its columns plus its primary key (`Table`).
 The CREATE TABLE statement, the polars schema used to build frames for it, and the
 typed rows the query methods return all come from that one definition.
+
+polars is imported only when a polars schema is asked for (by the ingest jobs), so the web
+app runs without it.
 """
 
 from __future__ import annotations
@@ -20,9 +23,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
-from typing import Any, TypedDict, cast, get_args, get_type_hints
+from typing import TYPE_CHECKING, Any, TypedDict, cast, get_args, get_type_hints
 
-import polars as pl
+if TYPE_CHECKING:
+    import polars as pl
 
 DEFAULT_DB_PATH = "data/startsit.db"
 
@@ -203,9 +207,32 @@ class DecisionCacheRow(TypedDict):
     decision_json: str
 
 
+class RecommendationRow(TypedDict):
+    """Every answer shown to a user, with the exact evidence behind it, for the weekly evaluation.
+
+    Injury reports and roster statuses are overwritten as they update, so the stored packet is
+    the only record of what the user and the LLM saw.
+    """
+
+    rec_id: str
+    created_at: str  # ISO 8601, UTC
+    season: int
+    week: int
+    scoring: str
+    player_ids: str  # JSON list, in the order asked
+    pick: str
+    baseline_pick: str
+    confidence: str
+    source: str  # llm | cache | baseline
+    model: str | None
+    decision_json: str
+    packet_text: str  # exactly what the LLM saw (or would have)
+    packet_json: str  # the packet's structure: per-player scores and evidence items with ids and links
+    visitor: str | None  # salted hash of the IP; None outside the web app
+
+
 # Postgres REAL is single precision, so floats are DOUBLE PRECISION (same meaning in SQLite).
 _SQL_TYPES: dict[type, str] = {str: "TEXT", int: "INTEGER", float: "DOUBLE PRECISION"}
-_POLARS_TYPES: dict[type, type[pl.DataType]] = {str: pl.String, int: pl.Int64, float: pl.Float64}
 
 
 def _column_types(row: type) -> dict[str, tuple[type, bool]]:
@@ -242,7 +269,10 @@ class Table:
         return f"{name} {_SQL_TYPES[base]}"
 
     def polars_schema(self) -> dict[str, type[pl.DataType]]:
-        return {name: _POLARS_TYPES[base] for name, (base, _) in _column_types(self.row).items()}
+        import polars as pl
+
+        types: dict[type, type[pl.DataType]] = {str: pl.String, int: pl.Int64, float: pl.Float64}
+        return {name: types[base] for name, (base, _) in _column_types(self.row).items()}
 
 
 TABLES: dict[str, Table] = {
@@ -260,6 +290,7 @@ TABLES: dict[str, Table] = {
         Table("news_facts", NewsFactRow, ("item_id", "player_id")),
         Table("decision_cache", DecisionCacheRow, ("cache_key",)),
         Table("projections", ProjectionRow, ("season", "week", "fetched_date", "fantasypros_id")),
+        Table("recommendations", RecommendationRow, ("rec_id",)),
     )
 }
 
@@ -305,7 +336,10 @@ def is_postgres(target: str) -> bool:
 
 
 class Database:
-    def __init__(self, target: str | Path | None = None):
+    """A connection. `setup` (default) creates missing tables and columns first; the web app does
+    that once per process and skips it on later connections."""
+
+    def __init__(self, target: str | Path | None = None, setup: bool = True):
         target = resolve_target(target)
         self.is_postgres = is_postgres(target)
         self.conn: Any
@@ -313,21 +347,29 @@ class Database:
             import psycopg
             from psycopg.rows import dict_row
 
-            self.conn = psycopg.connect(target, row_factory=dict_row)
-            with self.conn.transaction():
-                self.conn.execute(SCHEMA)
-                # Supabase also serves the public schema through its REST API (anon/authenticated
-                # roles). Row-level security with no policies closes that door; the app connects as
-                # the tables' owner, which RLS doesn't restrict.
-                for table in ALL_TABLE_NAMES:
-                    self.conn.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
+            # prepare_threshold=None: no server-side prepared statements, which Supabase's
+            # transaction pooler (used by the serverless web app) doesn't support.
+            self.conn = psycopg.connect(target, row_factory=dict_row, prepare_threshold=None)
+            if setup:
+                self._setup_postgres()
         else:
             if target != ":memory:":
                 Path(target).parent.mkdir(parents=True, exist_ok=True)
             self.conn = sqlite3.connect(target)
             self.conn.row_factory = sqlite3.Row
-            self.conn.executescript(SCHEMA)
-        self._add_missing_columns()
+            if setup or target == ":memory:":
+                self.conn.executescript(SCHEMA)
+        if setup:
+            self._add_missing_columns()
+
+    def _setup_postgres(self) -> None:
+        with self.conn.transaction():
+            self.conn.execute(SCHEMA)
+            # Supabase also serves the public schema through its REST API (anon/authenticated
+            # roles). Row-level security with no policies closes that door; the app connects as
+            # the tables' owner, which RLS doesn't restrict.
+            for table in ALL_TABLE_NAMES:
+                self.conn.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
 
     def _existing_columns(self) -> dict[str, set[str]]:
         """Columns of every table that exists, by table name."""
@@ -606,3 +648,21 @@ class Database:
         return cast(
             "DecisionCacheRow | None", self._one("SELECT * FROM decision_cache WHERE cache_key = ?", (cache_key,))
         )
+
+    # --- web app ---------------------------------------------------------------------
+
+    def latest_scrape_date(self, season: int, week: int) -> str | None:
+        """When the week's rankings were scraped (YYYY-MM-DD)."""
+        return cast(
+            "str | None",
+            self._scalar("SELECT max(scrape_date) AS d FROM rankings WHERE season = ? AND week = ?", (season, week)),
+        )
+
+    def latest_news_fetch(self) -> str | None:
+        """When news feeds were last fetched (ISO 8601, UTC)."""
+        return cast("str | None", self._scalar("SELECT max(fetched_at) AS t FROM news_items"))
+
+    def latest_stats_run(self) -> str | None:
+        """When nflverse stats were last ingested ('YYYY-MM-DD HH:MM:SS', UTC)."""
+        value = self._scalar("SELECT max(finished_at) AS t FROM ingest_runs WHERE source LIKE ?", ("nflverse:%",))
+        return str(value)[:19] if value is not None else None

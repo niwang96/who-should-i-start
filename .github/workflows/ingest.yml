@@ -48,7 +48,7 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
-      - run: pip install -e .
+      - run: pip install -e '.[ingest]'
       - name: Ingest
         env:
           SEASON: ${{ inputs.season }}
