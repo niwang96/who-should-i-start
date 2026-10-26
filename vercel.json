@@ -8,11 +8,5 @@
       "includeFiles": "src/startsit/**",
       "maxDuration": 30
     }
-  },
-  "rewrites": [
-    {
-      "source": "/(.*)",
-      "destination": "/api/index"
-    }
-  ]
+  }
 }

@@ -37,8 +37,9 @@ evidence, every evidence item with its source link, and a warning when a player'
 already kicked off. Every answer is logged to `recommendations` with the full packet (text and
 structure) for the weekly evaluation; visitors are recorded only as a salted hash.
 
-Deployed on Vercel (free Hobby plan): `api/index.py` exposes the app and `vercel.json` routes
-every path to it. The base install (no `ingest` extra) is all the web app needs, so polars and
+Deployed on Vercel (free Hobby plan): `api/index.py` exposes the app, which Vercel's FastAPI
+support serves for every path; `vercel.json` sets the region (`pdx1`, next to Supabase) and must
+not rewrite paths (a rewrite to `/api/index` made every page a 404). The base install (no `ingest` extra) is all the web app needs, so polars and
 nflreadpy stay out of the deployment. Vercel environment variables: `DATABASE_URL` (Supabase
 **transaction pooler**, port 6543), `GEMINI_API_KEY`, `VISITOR_SALT`.
 
