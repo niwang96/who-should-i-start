@@ -1,4 +1,5 @@
-"""Vercel entry point: Vercel serves the ASGI `app` in this file; vercel.json routes every path here."""
+"""Vercel entry point. Vercel's FastAPI support finds the ASGI `app` here and sends it every request
+with its original path (no rewrites needed: a rewrite to /api/index would hide the real path)."""
 
 import logging
 import sys
