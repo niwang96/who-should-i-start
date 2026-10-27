@@ -12,6 +12,7 @@ Run locally: uvicorn startsit.web.app:app --reload  (uses $DATABASE_URL or the S
 # No `from __future__ import annotations` here: FastAPI reads the endpoint annotations at
 # runtime, including the `DB` alias defined inside create_app.
 import logging
+import os
 import re
 import time
 from collections.abc import Callable, Iterator
@@ -33,6 +34,7 @@ from startsit.evidence import EvidencePacket, PlayerLookupError, current_week, e
 from startsit.llm import BudgetedLLM, visitor_id
 from startsit.names import PlayerMatcher
 from startsit.scoring import LABELS, SCORINGS, Scoring
+from startsit.web import diag
 
 log = logging.getLogger("startsit.web")
 
@@ -113,7 +115,11 @@ def create_app(
     db_target: str | None = None,
     llm_factory: Callable[[Database, str | None], BudgetedLLM | None] = decide_llm,
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    diagnostics: bool | None = None,
 ) -> FastAPI:
+    """The app. `diagnostics` adds /diag/limits; by default only on Vercel preview deployments."""
+    if diagnostics is None:
+        diagnostics = os.environ.get("VERCEL_ENV") == "preview"
     app = FastAPI(title="Who Should I Start?", docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(SecurityHeaders)
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
@@ -220,6 +226,12 @@ def create_app(
     @app.get("/healthz")
     def health() -> JSONResponse:
         return JSONResponse({"ok": True, "time": datetime.now(UTC).isoformat(timespec="seconds")})
+
+    if diagnostics:
+
+        @app.get("/diag/limits")
+        def diag_limits(request: Request, db: DB) -> JSONResponse:
+            return JSONResponse(diag.limits_report(db, request.headers, client_address(request), clock()))
 
     return app
 
