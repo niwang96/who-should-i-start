@@ -59,6 +59,9 @@ MEDIUM_MARGIN = 2.0
 Confidence = Literal["high", "medium", "low"]
 CONFIDENCES: tuple[Confidence, ...] = ("high", "medium", "low")
 Source = Literal["llm", "cache", "baseline"]
+# Why a decision fell back to the baseline. The first four mean the AI never answered (it wasn't
+# called, or the call failed); "invalid" means it answered and the answer failed validation.
+Fallback = Literal["unavailable", "daily_limit", "busy", "visitor_limit", "invalid"]
 
 SYSTEM_PROMPT = """You help a fantasy football manager decide which player to start.
 You get an evidence packet: numbered facts (E1, E2, ...) about each player, and a code baseline pick.
@@ -127,6 +130,7 @@ class Decision:
     source: Source = "llm"
     model: str | None = None
     note: str | None = None  # shown to the user, e.g. why the baseline is being used
+    fallback: Fallback | None = None  # why the baseline is being used (None: the AI's answer)
     cited_urls: dict[str, str | None] = field(default_factory=dict)  # evidence id -> source link
 
     @property
@@ -320,11 +324,12 @@ def decide_llm(db: Database, visitor: str | None = None) -> BudgetedLLM | None:
 def decide(db: Database, packet: EvidencePacket, llm: BudgetedLLM | None) -> Decision:
     """The validated LLM pick (cached), else the baseline pick with a note saying why."""
 
-    def fallback(note: str) -> Decision:
-        return cap_confidence(with_citations(baseline_decision(packet, note), packet), packet)
+    def fallback(reason: Fallback, note: str) -> Decision:
+        decision = replace(baseline_decision(packet, note), fallback=reason)
+        return cap_confidence(with_citations(decision, packet), packet)
 
     if llm is None:
-        return fallback("AI unavailable; showing the baseline pick.")
+        return fallback("unavailable", "AI unavailable; showing the baseline pick.")
     model = llm.provider.model
     key = cache_key(packet, model)
     if cached := db.cached_decision(key):
@@ -339,14 +344,14 @@ def decide(db: Database, packet: EvidencePacket, llm: BudgetedLLM | None) -> Dec
         try:
             raw = llm.generate_json(attempt, response_schema(list(player_keys(packet))), SYSTEM_PROMPT)
         except QuotaExceeded:
-            return fallback("Daily AI limit reached; showing the baseline pick.")
+            return fallback("daily_limit", "Daily AI limit reached; showing the baseline pick.")
         except RateLimited:
-            return fallback("The AI is busy right now; showing the baseline pick. Ask again in a minute.")
+            return fallback("busy", "The AI is busy right now; showing the baseline pick. Ask again in a minute.")
         except VisitorLimited as e:
-            return fallback(f"You've reached the {e}; showing the baseline pick.")
+            return fallback("visitor_limit", f"You've reached the {e}; showing the baseline pick.")
         except LLMError as e:
             log.warning("decision call failed: %s", e)
-            return fallback("AI unavailable; showing the baseline pick.")
+            return fallback("unavailable", "AI unavailable; showing the baseline pick.")
         decision, problems = validate(raw, packet)
         if decision is not None:
             decision = cap_confidence(with_citations(replace(decision, model=model), packet), packet)
@@ -356,7 +361,7 @@ def decide(db: Database, packet: EvidencePacket, llm: BudgetedLLM | None) -> Dec
             db.upsert("decision_cache", [row])
             return decision
         log.warning("decision rejected: %s", "; ".join(problems))
-    return fallback("The AI's answer failed validation; showing the baseline pick.")
+    return fallback("invalid", "The AI's answer failed validation; showing the baseline pick.")
 
 
 def record_recommendation(

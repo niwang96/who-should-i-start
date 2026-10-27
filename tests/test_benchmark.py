@@ -5,7 +5,7 @@ from test_evidence import game, player, ranking
 
 from startsit import benchmark
 from startsit.evaluate import BACKFILL, BENCHMARK
-from startsit.llm import BudgetedLLM, FakeProvider
+from startsit.llm import BudgetedLLM, FakeProvider, RateLimited
 
 # Valid for any two-player packet here: cites the first player's consensus items, states no numbers.
 ANSWER = {
@@ -88,7 +88,7 @@ def test_run_asks_the_ai_and_logs_benchmark_recommendations(week8):
         (BENCHMARK, "llm", "ppr"),
         (BENCHMARK, "llm", "std"),
     ]
-    assert sleeps == [benchmark.CALL_SPACING] * 3
+    assert sleeps == [benchmark.CALL_SPACING] * 2  # before each AI call after the first
     assert not benchmark.due(week8, 2026, 8, SUNDAY_MORNING)  # done for the week
     assert week8.llm_calls_since(SATURDAY, "benchmark") == 3
 
@@ -116,3 +116,34 @@ def test_a_backfilled_set_is_asked_and_logged_as_of_the_past(week8):
     rows = week8.query("SELECT DISTINCT visitor, created_at FROM recommendations")
     assert rows == [{"visitor": BACKFILL, "created_at": "2026-11-01T15:00:00+00:00"}]
     assert benchmark.done(week8, 2026, 8) and benchmark.backfill_week(week8, 2026, 8, MONDAY) is None
+
+
+def test_a_set_stops_when_the_ai_does_not_answer_and_resumes_later(week8):
+    calls = {"n": 0}
+
+    def respond(prompt):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RateLimited("busy")
+        return ANSWER
+
+    llm = BudgetedLLM(FakeProvider(respond=respond), week8, "benchmark", 10, clock=lambda: SUNDAY_MORNING)
+    run = dict(clock=lambda: SUNDAY_MORNING, sleep=lambda s: None)
+    assert benchmark.run(week8, llm, 2026, 8, **run) == 1  # the busy answer isn't logged as the AI's
+    assert not benchmark.done(week8, 2026, 8) and benchmark.due(week8, 2026, 8, SUNDAY_MORNING)
+    assert benchmark.calls_needed(week8, 2026, 8) == sum(benchmark.PAIRS.values()) - 1
+    assert benchmark.run(week8, llm, 2026, 8, **run) == 2  # resumes with the matchups not yet asked
+    assert benchmark.done(week8, 2026, 8)
+    rows = week8.query("SELECT source FROM recommendations")
+    assert [r["source"] for r in rows] == ["llm"] * 3  # no duplicates, no baseline rows
+
+
+def test_an_invalid_answer_is_logged_and_its_retry_counts_toward_the_pause(week8):
+    bad = dict(ANSWER, pick="P9")
+    replies = [bad, bad, ANSWER, ANSWER]
+    llm = BudgetedLLM(FakeProvider(responses=replies), week8, "benchmark", 10, clock=lambda: SUNDAY_MORNING)
+    sleeps: list[float] = []
+    assert benchmark.run(week8, llm, 2026, 8, clock=lambda: SUNDAY_MORNING, sleep=sleeps.append) == 3
+    assert sleeps == [2 * benchmark.CALL_SPACING, benchmark.CALL_SPACING]  # two calls, then one
+    sources = [r["source"] for r in week8.query("SELECT source FROM recommendations ORDER BY created_at")]
+    assert sorted(sources) == ["baseline", "llm", "llm"]  # the AI answered badly: that counts against it

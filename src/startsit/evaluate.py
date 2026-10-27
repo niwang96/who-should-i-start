@@ -26,6 +26,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 
 from startsit.db import Database, EvaluationRow, RecommendationRow, utc_iso
+from startsit.decide import CONFIDENCES
 from startsit.scoring import Scoring, column
 
 # recommendations.visitor of the weekly benchmark set and its backfill of past weeks (startsit.benchmark)
@@ -33,7 +34,6 @@ BENCHMARK = "benchmark"
 BACKFILL = "benchmark-backfill"
 GROUPS = {BENCHMARK: "benchmark", BACKFILL: "backfill"}  # anything else is a real user
 AI_SOURCES = {"llm", "cache"}
-CONFIDENCES = ("high", "medium", "low")
 
 
 def actual_points(db: Database, player: dict[str, Any], season: int, week: int, scoring: Scoring) -> float | None:
