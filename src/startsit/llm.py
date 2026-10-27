@@ -87,7 +87,9 @@ class GeminiProvider:
                     raise QuotaExceeded(f"Gemini daily limit: {detail}") from e
                 raise RateLimited(f"Gemini rate limit: {detail}") from e
             raise LLMError(f"Gemini HTTP {e.code}: {detail}") from e
-        except (urllib.error.URLError, TimeoutError) as e:
+        except (OSError, ValueError) as e:
+            # URLError, timeouts and dropped connections are OSErrors; a body that isn't JSON is a
+            # ValueError. Callers catch LLMError, so nothing else may escape.
             raise LLMError(f"Gemini request failed: {e}") from e
 
     def generate_json(self, prompt: str, schema: dict[str, Any], system: str | None = None) -> Any:

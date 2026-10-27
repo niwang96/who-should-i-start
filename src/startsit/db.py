@@ -677,11 +677,21 @@ class Database:
 
     # --- decisions -----------------------------------------------------------------
 
-    def has_recommendations(self, season: int, week: int, visitor: str) -> bool:
+    def questions_asked(self, season: int, week: int, visitors: Sequence[str]) -> list[dict[str, Any]]:
+        """The player ids (JSON) and scoring of each recommendation logged for these visitors that week."""
+        marks = ", ".join("?" for _ in visitors)
+        return self.query(
+            f"SELECT player_ids, scoring FROM recommendations WHERE season = ? AND week = ? AND visitor IN ({marks})",
+            (season, week, *visitors),
+        )
+
+    def has_run(self, sources: Sequence[str], season: int, week: int) -> bool:
+        """Whether `ingest_runs` records any of these sources for that week."""
+        marks = ", ".join("?" for _ in sources)
         return (
             self._one(
-                "SELECT 1 AS x FROM recommendations WHERE season = ? AND week = ? AND visitor = ? LIMIT 1",
-                (season, week, visitor),
+                f"SELECT 1 AS x FROM ingest_runs WHERE source IN ({marks}) AND season = ? AND max_week = ? LIMIT 1",
+                (*sources, season, week),
             )
             is not None
         )

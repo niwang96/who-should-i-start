@@ -222,6 +222,9 @@ def create_app(
                 context |= answer(db, names, chosen, visitor_id(client_address(request)))
             except (PlayerLookupError, ValueError) as e:
                 context["error"] = str(e)
+            except Exception:  # anything else is our bug or a database hiccup: say so instead of a blank 500
+                log.exception("answering %s failed", names)
+                context["error"] = "Something went wrong on our side. Please try again in a minute."
         if request.headers.get("hx-request"):
             return templates.TemplateResponse(request, "_result.html", context)
         return page(request, db, **context)

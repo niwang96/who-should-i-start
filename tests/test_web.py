@@ -226,3 +226,13 @@ def test_track_record_page(path, monkeypatch):
 
 def _week(player_id, week, fp_ppr, team="PHI"):
     return cli_week(player_id, week) | dict(team=team, fp_ppr=fp_ppr, fp_half=fp_ppr, fp_std=fp_ppr)
+
+
+def test_an_unexpected_error_shows_a_message_instead_of_a_blank_page(path, monkeypatch, caplog):
+    def broken(*args, **kwargs):
+        raise RuntimeError("database hiccup")
+
+    monkeypatch.setattr(web, "packet_for_names", broken)
+    r = ask(client_for(path), "Alpha Back", "Bravo Back", hx=True)
+    assert r.status_code == 200 and "Something went wrong on our side" in r.text and 'role="alert"' in r.text
+    assert "answering ['Alpha Back', 'Bravo Back'] failed" in caplog.text

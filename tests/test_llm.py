@@ -171,3 +171,18 @@ def test_visitor_limits_count_only_that_visitors_calls(db):
 def test_visitor_id_hashes_the_address_with_a_salt():
     assert visitor_id("1.2.3.4", "s") == visitor_id("1.2.3.4", "s") != visitor_id("1.2.3.4", "t")
     assert "1.2.3.4" not in visitor_id("1.2.3.4", "s") and len(visitor_id("1.2.3.4", "s")) == 16
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [ConnectionResetError("reset by peer"), TimeoutError("read timed out"), None],  # None: a body that isn't JSON
+)
+def test_gemini_turns_any_transport_or_decoding_failure_into_an_llm_error(monkeypatch, failure):
+    def urlopen(req, timeout):
+        if failure is not None:
+            raise failure
+        return FakeResponse(b"<html>gateway</html>")
+
+    monkeypatch.setattr(llm.urllib.request, "urlopen", urlopen)
+    with pytest.raises(llm.LLMError, match="Gemini request failed"):
+        llm.GeminiProvider(api_key="k").generate_json("p", {})

@@ -173,6 +173,7 @@ def test_decide_falls_back_to_the_baseline_after_two_bad_answers(db):
     decision = decide(db, make_packet(), budgeted(db, provider))
     assert (decision.source, decision.pick, decision.confidence) == ("baseline", "NACUA", "high")
     assert decision.note == "The AI's answer failed validation; showing the baseline pick."
+    assert decision.fallback == "invalid"
     assert decision.factors == [
         Factor("Baseline (100% FantasyPros consensus) favors Puka Nacua by 6.4 pts.", ["E3", "E4"])
     ]
@@ -181,23 +182,27 @@ def test_decide_falls_back_to_the_baseline_after_two_bad_answers(db):
 
 
 @pytest.mark.parametrize(
-    "error,note",
+    "error,note,reason",
     [
-        (QuotaExceeded("daily limit"), "Daily AI limit reached; showing the baseline pick."),
-        (RateLimited("per minute"), "The AI is busy right now; showing the baseline pick. Ask again in a minute."),
-        (LLMError("boom"), "AI unavailable; showing the baseline pick."),
+        (QuotaExceeded("daily limit"), "Daily AI limit reached; showing the baseline pick.", "daily_limit"),
+        (
+            RateLimited("per minute"),
+            "The AI is busy right now; showing the baseline pick. Ask again in a minute.",
+            "busy",
+        ),
+        (LLMError("boom"), "AI unavailable; showing the baseline pick.", "unavailable"),
     ],
 )
-def test_decide_falls_back_when_the_llm_fails(db, error, note):
+def test_decide_falls_back_when_the_llm_fails(db, error, note, reason):
     decision = decide(db, make_packet(), budgeted(db, FakeProvider(responses=[error])))
-    assert (decision.source, decision.note) == ("baseline", note)
+    assert (decision.source, decision.note, decision.fallback) == ("baseline", note, reason)
 
 
 def test_decide_respects_the_daily_budget_and_works_without_an_llm(db):
     spent = decide(db, make_packet(), budgeted(db, FakeProvider(responses=[answer()]), budget=0))
     assert spent.note == "Daily AI limit reached; showing the baseline pick."
     none = decide(db, make_packet(margin=1.0), None)
-    assert (none.source, none.confidence) == ("baseline", "low")
+    assert (none.source, none.confidence, none.fallback) == ("baseline", "low", "unavailable")
 
 
 def test_decide_stops_a_visitor_at_their_limit_but_still_serves_cached_answers(db):

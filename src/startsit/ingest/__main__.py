@@ -180,9 +180,10 @@ def run_backfill(db: Database, season: int, now: datetime | None = None) -> int:
     """Ask one past week's benchmark set as of its Sunday morning, when today's budget allows.
 
     Not on Sundays (UTC, the day the budget resets on: Saturday 8pm to Sunday 8pm Eastern),
-    whose budget is the live set's, and only with room for a whole set, so in practice one week
-    a day, newest first. The rankings scrape from before that Sunday is read
-    from the file's git history and archived, so the packets hold what was known then.
+    whose budget is the live set's, and only with room for the rest of the week's set, so in
+    practice one week a day, newest first; an interrupted set resumes on a later run. The
+    rankings scrape from before that Sunday is read from the file's git history and archived,
+    so the packets hold what was known then.
     """
     now = now or datetime.now(UTC)
     if now.astimezone(UTC).weekday() == 6:
@@ -192,7 +193,7 @@ def run_backfill(db: Database, season: int, now: datetime | None = None) -> int:
         return 0
     week, as_of = target
     llm = benchmark_llm(db)
-    if llm is None or llm.remaining(now) < sum(benchmark.PAIRS.values()):
+    if llm is None or llm.remaining(now) < benchmark.calls_needed(db, season, week):
         return 0
     sha = rankings.snapshot_before(as_of)
     games = pl.DataFrame(db.games(season), schema=TABLES["games"].polars_schema())

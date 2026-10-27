@@ -38,7 +38,8 @@ concurrency: ingest
 jobs:
   ingest:
     runs-on: ubuntu-latest
-    # A benchmark set (live or backfill) adds ~6 minutes: 30 AI calls, 10 s apart.
+    # A benchmark set (live or backfill) adds ~8 minutes: 30+ AI calls, 15 s apart; an interrupted
+    # set resumes on the next run.
     timeout-minutes: 25
     env:
       # Supabase when the secret is set; otherwise a fresh SQLite file uploaded as an artifact.

@@ -13,6 +13,7 @@ game has already kicked off (Thursday, or a morning international game) are left
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections.abc import Callable
@@ -37,11 +38,21 @@ MAIN_SLATE_HOUR = 12  # Eastern; earlier Sunday kickoffs are international morni
 # The backfill's first week: 2026 week 1 rankings scrapes have no kickoff times, so their week
 # can't be told (startsit.ingest.rankings.build_rankings).
 BACKFILL_FROM_WEEK = 2
-# Seconds between AI calls: at most 4 of the shared 12/minute, leaving the rest for real users
-# on Sunday mornings, their busiest time (~8 minutes for a set).
+# Seconds of pause per AI call made (a validation retry is a second call): at most 4 of the
+# shared 12/minute, leaving the rest for real users on Sunday mornings, their busiest time.
+# A set takes ~8 minutes.
 CALL_SPACING = 15.0
+# Fallbacks where the AI never answered (busy, over a limit, unreachable): the set stops there
+# and a later run resumes it, rather than logging baseline picks as the AI's.
+NOT_ANSWERED = {"unavailable", "daily_limit", "busy", "visitor_limit"}
+TAGS = (BENCHMARK, BACKFILL)
 
 Matchup = tuple[str, str, Scoring]
+
+
+def marker(tag: str) -> str:
+    """The ingest_runs source recorded when a set is complete."""
+    return f"benchmark:{tag}"
 
 
 def benchmark_time(games: list[GameRow]) -> datetime | None:
@@ -53,8 +64,18 @@ def benchmark_time(games: list[GameRow]) -> datetime | None:
 
 
 def done(db: Database, season: int, week: int) -> bool:
-    """Whether the week has a benchmark set, live or backfilled."""
-    return any(db.has_recommendations(season, week, tag) for tag in (BENCHMARK, BACKFILL))
+    """Whether the week's set is complete, live or backfilled (a partial set is resumed, not redone)."""
+    return db.has_run([marker(tag) for tag in TAGS], season, week)
+
+
+def asked(db: Database, season: int, week: int) -> set[tuple[frozenset[str], str]]:
+    """The week's benchmark questions already logged (either tag), as (players, scoring)."""
+    return {(frozenset(json.loads(q["player_ids"])), q["scoring"]) for q in db.questions_asked(season, week, TAGS)}
+
+
+def calls_needed(db: Database, season: int, week: int) -> int:
+    """AI calls the week's set still needs, at least one each (retries aside)."""
+    return max(1, sum(PAIRS.values()) - len(asked(db, season, week)))
 
 
 def due(db: Database, season: int, week: int, now: datetime) -> bool:
@@ -124,18 +145,35 @@ def run(
 
     `as_of` (default now) is when the questions count as asked: the backfill passes a past Sunday
     morning, so the packets hold only what was known then. Budget checks use the real clock.
+    Questions already logged for the week are skipped, so an interrupted set resumes. The set is
+    marked complete only if every matchup was asked; it stops early (and logs nothing for the
+    matchup) when the budget is spent or the AI doesn't answer.
     """
-    asked = as_of or clock()
-    logged = 0
-    for a, b, scoring in matchups(db, season, week, asked):
+    asked_at = as_of or clock()
+    already = asked(db, season, week)
+    logged, pause, complete = 0, 0.0, True
+    for a, b, scoring in matchups(db, season, week, asked_at):
+        if (frozenset((a, b)), scoring) in already:
+            continue
         if llm.remaining(clock()) <= 0:
-            log.warning("benchmark budget spent after %s matchups", logged)
+            log.warning("%s week %s: budget spent after %s matchups; a later run resumes", tag, week, logged)
+            complete = False
             break
-        packet = build_packet(db, [a, b], scoring, season, week, as_of=asked)
+        if pause:
+            sleep(pause)
+        before = llm.remaining(clock())
+        packet = build_packet(db, [a, b], scoring, season, week, as_of=asked_at)
         decision = decide(db, packet, llm)
-        record_recommendation(db, packet, decision, tag, created_at=asked)
+        pause = CALL_SPACING * max(0, before - llm.remaining(clock()))
+        if decision.fallback in NOT_ANSWERED:
+            log.warning(
+                "%s week %s: stopped after %s matchups (%s); a later run resumes", tag, week, logged, decision.note
+            )
+            complete = False
+            break
+        record_recommendation(db, packet, decision, tag, created_at=asked_at)
         logged += 1
-        if decision.source == "llm":
-            sleep(CALL_SPACING)
-    log.info("%s week %s: %s matchups", tag, week, logged)
+    if complete:
+        db.record_run(marker(tag), season, week, logged)
+    log.info("%s week %s: %s matchups%s", tag, week, logged, "" if complete else " (incomplete)")
     return logged
