@@ -14,7 +14,8 @@
   <header>
     <h1><a href="/">Who Should I Start?</a></h1>
     {% if info %}
-    <p class="week">Answering for <strong>Week {{ info.week }}, {{ info.season }}</strong></p>
+    <p class="week">Answering for <strong>Week {{ info.week }}, {{ info.season }}</strong>
+      {%- if info.gamedays %} · games {{ info.gamedays[0]|game_day }} – {{ info.gamedays[1]|game_day }}{% endif %}</p>
     <p class="freshness">
       Rankings as of {{ info.rankings_as_of or "unknown" }}
       · News checked {{ info.news_as_of[:16]|replace("T", " ") if info.news_as_of else "never" }} UTC

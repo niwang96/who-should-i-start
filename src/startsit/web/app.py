@@ -16,7 +16,7 @@ import re
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Annotated, Any, cast
 
@@ -77,6 +77,13 @@ class WeekInfo:
     rankings_as_of: str | None
     news_as_of: str | None
     stats_as_of: str | None
+    gamedays: tuple[str, str] | None = None  # the week's first and last game days
+
+
+def game_day(day: str) -> str:
+    """'2026-10-22' -> 'Thu Oct 22'."""
+    d = date.fromisoformat(day)
+    return f"{d:%a %b} {d.day}"
 
 
 _CITATION = re.compile(r"\[?\b(E\d+)\b\]?")
@@ -105,6 +112,7 @@ def clean_names(players: list[str]) -> list[str]:
 def create_app(
     db_target: str | None = None,
     llm_factory: Callable[[Database, str | None], BudgetedLLM | None] = decide_llm,
+    clock: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> FastAPI:
     app = FastAPI(title="Who Should I Start?", docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(SecurityHeaders)
@@ -120,6 +128,7 @@ def create_app(
     )
     templates.env.filters["eastern"] = eastern_time
     templates.env.filters["link_citations"] = link_citations
+    templates.env.filters["game_day"] = game_day
 
     setup_done = False  # create missing tables once per process, not on every request
     matcher_cache: dict[str, Any] = {}
@@ -146,7 +155,12 @@ def create_app(
             return None
         week = current_week(db, season)
         return WeekInfo(
-            season, week, db.latest_scrape_date(season, week), db.latest_news_fetch(), db.latest_stats_run()
+            season,
+            week,
+            db.latest_scrape_date(season, week),
+            db.latest_news_fetch(),
+            db.latest_stats_run(),
+            db.week_gamedays(season, week),
         )
 
     def page(request: Request, db: Database, **context: Any) -> HTMLResponse:
@@ -189,7 +203,13 @@ def create_app(
         info = week_info(db)
         if info is None:
             raise ValueError("No data yet. Please try again later.")
-        packet: EvidencePacket = packet_for_names(db, names, scoring, info.season, info.week, matcher(db))
+        packet: EvidencePacket = packet_for_names(
+            db, names, scoring, info.season, info.week, matcher(db), as_of=clock()
+        )
+        if started := [p for p in packet.players if p.game_started]:
+            # A player whose game has kicked off is locked in or out of the lineup in most leagues, so
+            # there's no choice left: no AI call, and nothing logged for the evaluation.
+            return {"packet": packet, "locked": started, "names": packet.names, "info": info}
         decision: Decision = decide(db, packet, llm_factory(db, visitor))
         try:
             record_recommendation(db, packet, decision, visitor)
