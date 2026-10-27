@@ -3,10 +3,16 @@ name: integration
 # Live tests against the real services (tests/test_live.py). They spend a little API quota
 # (2-4 Gemini calls and 1 FantasyPros call per run), so they run as rarely as possible: only
 # when a merge to main changes code that talks to an outside service, or when started by hand
-# (Actions > integration > Run workflow; pick a branch to test a PR before merging). No schedule:
+# (Actions > integration > Run workflow; pick a branch to test a PR before merging, and optionally
+# a test filter: `reddit` spends no API quota). No schedule:
 # the hourly and daily ingest jobs already exercise every service for real.
 on:
   workflow_dispatch:
+    inputs:
+      only:
+        description: "Run only tests matching this pytest -k expression (e.g. reddit); empty runs all"
+        required: false
+        default: ""
   push:
     branches: [main]
     paths:
@@ -37,4 +43,6 @@ jobs:
           python-version: "3.13"
           cache: pip
       - run: pip install -e '.[dev,ingest]'
-      - run: pytest -m live -v
+      - run: pytest -m live -v -k "$ONLY"
+        env:
+          ONLY: ${{ inputs.only }}
