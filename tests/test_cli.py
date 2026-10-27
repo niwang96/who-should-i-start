@@ -242,3 +242,117 @@ def test_a_news_run_does_the_daily_refresh_when_it_is_due(tmp_path, monkeypatch,
     assert "daily stats refresh is due; running it first" in caplog.text
     with Database(path) as db:
         assert db.latest_stats_run() is not None and db.query("select count(*) as n from player_weeks")[0]["n"] == 1
+
+
+def test_ingest_runs_the_benchmark_only_when_due_and_with_a_key(tmp_path, monkeypatch, caplog):
+    from datetime import UTC, datetime
+
+    path = seed(tmp_path / "b.db")  # week 7, first Sunday kickoff Oct 25 1pm Eastern (17:00 UTC)
+    calls = []
+    monkeypatch.setattr(ingest_main.benchmark, "run", lambda db, llm, season, week: calls.append(week) or 3)
+    with Database(path) as db:
+        assert ingest_main.run_benchmark(db, 2026, datetime(2026, 10, 25, 12, 0, tzinfo=UTC)) == 0  # not yet
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        assert ingest_main.run_benchmark(db, 2026, datetime(2026, 10, 25, 13, 30, tzinfo=UTC)) == 0
+        assert "benchmark skipped: GEMINI_API_KEY is not set" in caplog.text
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        assert ingest_main.run_benchmark(db, 2026, datetime(2026, 10, 25, 13, 30, tzinfo=UTC)) == 3
+    assert calls == [7]
+
+
+def test_the_daily_refresh_scores_finished_recommendations(tmp_path, monkeypatch, caplog):
+    path = str(tmp_path / "i.db")
+    raw = make_raw(stats=[stat_row("G1", 1)], snaps=[snap("P1", 1, 0.8)])
+    monkeypatch.setattr(ingest_main.nflverse, "fetch", lambda season: raw)
+    monkeypatch.setattr(ingest_main.rankings, "fetch", lambda: rankings_raw([rank_row("19222", "Wide Out")]))
+    monkeypatch.delenv("FANTASYPROS_API_KEY", raising=False)
+    caplog.set_level("INFO")
+    with Database(path) as db:
+        ingest_main.run_stats(db, 2026)
+    assert "evaluation: 0 recommendations scored" in caplog.text
+
+
+def test_snapshot_before_asks_github_for_the_newest_scrape_at_that_time(monkeypatch):
+    from datetime import UTC, datetime
+
+    calls = []
+
+    def fake_get(url, headers=None, timeout=30):
+        calls.append((url, headers))
+        return b'[{"sha": "abc123"}]' if "until=2026-10-25T13:00:00Z" in url else b"[]"
+
+    monkeypatch.setattr(rankings, "get_bytes", fake_get)
+    monkeypatch.setenv("GITHUB_TOKEN", "t0ken")
+    assert rankings.snapshot_before(datetime(2026, 10, 25, 13, 0, tzinfo=UTC)) == "abc123"
+    assert calls[0][1]["Authorization"] == "Bearer t0ken"
+    monkeypatch.delenv("GITHUB_TOKEN")
+    assert rankings.snapshot_before(datetime(2026, 9, 1, tzinfo=UTC)) is None
+    assert "Authorization" not in calls[1][1]
+
+    csv = {rankings.SNAPSHOT_URL.format(sha="abc123"): b"page\nqb\n", rankings.PLAYER_IDS_URL: b"fantasypros_id\n1\n"}
+    monkeypatch.setattr(rankings, "get_bytes", lambda url, timeout: csv[url])
+    assert rankings.fetch_snapshot("abc123").rankings.to_dicts() == [{"page": "qb"}]
+
+
+def test_ingest_backfills_one_past_week_as_of_its_sunday_morning(tmp_path, monkeypatch, caplog):
+    from datetime import UTC, datetime
+
+    import polars as pl
+
+    from startsit.evaluate import BACKFILL
+
+    path = seed(tmp_path / "b.db")  # week 7: Sunday Oct 25, 1pm Eastern
+    tuesday, sunday = datetime(2026, 10, 27, 12, 0, tzinfo=UTC), datetime(2026, 11, 1, 12, 0, tzinfo=UTC)
+    as_of = datetime(2026, 10, 25, 13, 0, tzinfo=UTC)
+    runs = []
+    monkeypatch.setattr(
+        ingest_main.benchmark, "run", lambda db, llm, season, week, as_of, tag: runs.append((week, as_of, tag)) or 30
+    )
+    monkeypatch.setattr(ingest_main.rankings, "fetch_snapshot", lambda sha: f"raw@{sha}")
+    snapshot = {"sha": "abc"}
+    monkeypatch.setattr(ingest_main.rankings, "snapshot_before", lambda when: snapshot["sha"])
+    week_of_file = {"week": 7}
+    archived = [dict(_ranking("A", 11.0), scrape_date="2026-10-25")]
+
+    def build(raw, games, season):
+        assert raw == "raw@abc"
+        return pl.DataFrame([dict(r, week=week_of_file["week"]) for r in archived])
+
+    monkeypatch.setattr(ingest_main.rankings, "build_rankings", build)
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    with Database(path) as db:
+        assert ingest_main.run_backfill(db, 2026, sunday) == 0  # Sundays belong to the live set
+        snapshot["sha"] = None
+        assert ingest_main.run_backfill(db, 2026, tuesday) == 0
+        snapshot["sha"], week_of_file["week"] = "abc", 6
+        assert ingest_main.run_backfill(db, 2026, tuesday) == 0  # the scrape is for another week
+        assert caplog.text.count("backfill week 7: no rankings scrape for that week") == 2
+        week_of_file["week"] = 7
+        assert ingest_main.run_backfill(db, 2026, tuesday) == 30
+        assert db.latest_ranking("A", 2026, 7, through_day="2026-10-25")["proj_ppr"] == 11.0  # archived
+        for _ in range(45):  # today's benchmark budget, spent
+            db.record_llm_call("benchmark", "m", True, tuesday)
+        assert ingest_main.run_backfill(db, 2026, tuesday) == 0
+        monkeypatch.delenv("GEMINI_API_KEY")
+        assert ingest_main.run_backfill(db, 2026, tuesday) == 0
+        assert "benchmark skipped: GEMINI_API_KEY is not set" in caplog.text
+    assert runs == [(7, as_of, BACKFILL)]
+
+
+def test_backfill_waits_until_the_weeks_window_is_over(tmp_path):
+    from datetime import UTC, datetime
+
+    path = seed(tmp_path / "b.db")
+    with Database(path) as db:
+        assert ingest_main.run_backfill(db, 2026, datetime(2026, 10, 24, 12, 0, tzinfo=UTC)) == 0
+
+
+def test_a_scrape_without_kickoff_times_has_no_week():
+    import polars as pl
+
+    from startsit.db import TABLES
+
+    raw = rankings_raw([rank_row("19222", "Wide Out")])
+    raw.rankings = raw.rankings.drop("player_game_kickoff_ts")
+    games = pl.DataFrame(schema=TABLES["games"].polars_schema())
+    assert rankings.build_rankings(raw, games, 2026).is_empty()

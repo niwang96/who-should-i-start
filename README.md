@@ -2,8 +2,9 @@
 Fantasy Football helper for deciding which player to start.
 
 ## Status
-Build step 4 of 6 (see `CLAUDE.md`): ingest and usage features, consensus rankings, baseline and
-evidence packet, news extraction, and the AI decision. Next: web UI and recommendation logging.
+Build step 6 of 6 (see `CLAUDE.md`): ingest and usage features, consensus rankings, baseline and
+evidence packet, news extraction, the AI decision, the web app, and the weekly evaluation (6a).
+Next: the public track record page, then Reddit as a crowd signal (6b).
 
 ## Setup
 ```bash
@@ -117,7 +118,7 @@ packet, retries once with the problems, and otherwise falls back to the baseline
 so a repeat question costs nothing until the evidence changes.
 
 Free-tier protections (`startsit/llm.py`, enforced before every call by counting `llm_calls`):
-- daily budgets per purpose: 400 decisions, 60 news calls (Gemini allows 500/day);
+- daily budgets per purpose: 390 decisions, 60 news calls, 45 benchmark calls (Gemini allows 500/day);
 - one shared cap of 12 calls/minute across ingest and web requests (Gemini allows 15);
 - per visitor (web app): 6 new AI answers per 10 minutes and 25 per day, keyed by a salted hash
   of the IP address (`VISITOR_SALT`); cached answers don't count.
@@ -125,6 +126,30 @@ Free-tier protections (`startsit/llm.py`, enforced before every call by counting
 Each limit has its own note on the baseline fallback ("daily AI limit reached", "the AI is busy
 right now", "you've reached the limit of ..."). A Gemini 429 is read the same way: a per-day
 quota error counts as the daily limit, anything else as the per-minute one.
+
+## Evaluation (Stage 4, step 6a)
+```bash
+python -m startsit.evaluate     # score what's finished, then print the season's hit rates
+```
+Every logged recommendation is scored once all its players' games are in the nflverse stats
+(a player with no stats scores 0 once his team's game is in; until then it waits). A pick hits
+when the chosen player outscored the other in the question's format; a tie counts for neither
+side. Three picks are scored for each matchup: the one shown (the AI's, or the baseline's when
+the AI wasn't used), the code baseline, and the raw FantasyPros consensus on the day asked
+(better rank within a position, else the higher PPR projection). The report compares them on
+the matchups the AI answered, and also shows how the AI did when it went against the baseline
+and how often each confidence level hit. The daily stats refresh scores new results.
+
+Real questions are too few for meaningful hit rates, so each week a benchmark set of 30 close
+matchups (same position, neighbors in the consensus ranks, borderline starters) is asked of the
+AI four hours before the Sunday main slate (`startsit/benchmark.py`, run by the ingest job,
+10 s between calls). They're logged with `visitor = "benchmark"` and reported separately.
+
+Past weeks (2 onward) are backfilled one a day: the same 30-matchup set, asked as of that
+week's Sunday morning with the rankings scrape from just before it (read from the rankings
+file's git history). Questions only ever see rankings and projections from on or before the
+time asked. Backfilled weeks have no news before Oct 24, 2026, so they're reported apart
+(`benchmark-backfill`).
 
 ## Baseline and evidence packet (Stage 2)
 ```bash

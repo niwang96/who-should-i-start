@@ -44,7 +44,7 @@ from startsit.scoring import SCORINGS, Scoring
 log = logging.getLogger("startsit.decide")
 
 # Of the 500/day Gemini free tier: news gets 60, decisions this, the rest is headroom.
-DECIDE_DAILY_LLM_BUDGET = 400
+DECIDE_DAILY_LLM_BUDGET = 390
 # New (uncached) AI answers per visitor; cached answers and baseline picks are unlimited.
 VISITOR_LIMITS = (
     VisitorLimit(6, timedelta(minutes=10), "10 minutes"),
@@ -359,12 +359,21 @@ def decide(db: Database, packet: EvidencePacket, llm: BudgetedLLM | None) -> Dec
     return fallback("The AI's answer failed validation; showing the baseline pick.")
 
 
-def record_recommendation(db: Database, packet: EvidencePacket, decision: Decision, visitor: str | None = None) -> str:
-    """Log an answer shown to a user, with the full packet behind it; returns its id."""
+def record_recommendation(
+    db: Database,
+    packet: EvidencePacket,
+    decision: Decision,
+    visitor: str | None = None,
+    created_at: datetime | None = None,
+) -> str:
+    """Log an answer shown to a user, with the full packet behind it; returns its id.
+
+    `created_at` defaults to now; the benchmark backfill passes the past time it asked as of.
+    """
     q = packet.question
     row = RecommendationRow(
         rec_id=uuid.uuid4().hex,
-        created_at=utc_iso(datetime.now(UTC)),
+        created_at=utc_iso(created_at or datetime.now(UTC)),
         season=q.season,
         week=q.week,
         scoring=q.scoring,

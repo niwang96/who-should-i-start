@@ -109,7 +109,28 @@ Many users will ask about the same players, so cache per-player results.
 5d. ~~Wider layout~~ (Oct 27 2026): up to ~1150 px wide; header on one row (title left, week/dates/freshness right); the two player inputs side by side with scoring + button on one row; the answer card in two columns (verdict, tags and explainer left; summary and reasons right, capped at a readable width); evidence as a comparison grid (one row per kind, one column per player, picked player shaded; `PlayerEvidence.items_of`); "How it works" collapsed; small citation chips. Phones stack everything, with each evidence row labeled by player. Validation got more forgiving after a live near-tie failed twice on format: citations that aren't ids (e.g. the packet's header line) are dropped, and a summary without citations is accepted (the number check still applies); `PROMPT_VERSION` 4. Re-check: 8/8 real matchups answered by the AI on the first call. Follow-up: scoring is a segmented toggle (still radio buttons), the button sits at the right edge (full width on phones), and the same-name hint is gone (the ambiguity error gives the example).
 5e. Limit and Reddit checks (Oct 27 2026): `/diag/limits` (`startsit/web/diag.py`) shows the masked IP, which headers carried it, the visitor hash, and usage of each AI limit (no AI call). It's registered only when `VERCEL_ENV=preview`, and preview deployments sit behind Vercel's login, so production never serves it. Reddit gets read by the ingest jobs, not the web app, so it's tested from GitHub Actions: `test_live.py::test_reddit_is_readable_from_this_runner` (no API quota; Actions → integration → Run workflow).
 6. **Weekly evaluation, then Reddit as a crowd signal** (planned Oct 27 2026; 6a first, since it measures everything else).
-   - **6a. Evaluation:**
+   - **6a. Evaluation** (scoring and benchmark built Oct 27 2026; the track record page is next):
+     - **Built:**
+       - `startsit/evaluate.py` scores into `evaluations`: points per player (rounded to 2 decimals), the top scorer, and hits as 1/0/None (a tie counts for neither side) for the shown pick, the baseline and the raw consensus.
+       - A matchup waits until every player's team game is in `player_weeks`. Checked on real week 7 data: Monday night's DAL@PHI matchups stayed pending.
+       - Consensus pick: the rankings scrape on or before the day asked; the better ECR within a position, else the higher PPR projection; an unranked player loses.
+       - The report (`python -m startsit.evaluate`) compares AI, baseline and consensus on the AI-answered matchups, and adds AI overrides, confidence buckets and baseline/consensus over all matchups.
+       - The daily stats refresh scores new results.
+       - `startsit/benchmark.py`: 30 pairs a week (QB 4, RB 9, WR 12, TE 5; raised from 20 on Oct 27) of ECR neighbors starting at QB10/RB15/WR20/TE6. Who's listed first alternates, and the scoring formats cycle.
+       - **Live set:** asked by news runs in the window 4 h before the first Sunday kickoff at noon ET or later (morning international games don't count), skipping players whose game has started, 10 s between AI calls. A window missed entirely is left to the backfill.
+       - **Budgets:** `benchmark` 45/day (30 + retries); decide lowered to 390, so 390 + 60 + 45 = 495 of Gemini's 500.
+       - **No peeking:** packets use only rankings and projections archived on or before the day asked (`through_day`); the consensus pick uses the same cutoff.
+       - **Backfill** (`ingest.__main__.run_backfill`, tag `benchmark-backfill`, reported as its own group):
+         - Not on Sundays (the live set's budget). Needs room for a whole set in today's budget, so in practice one week a day, newest first, weeks 7 → 2.
+         - Asks as of that week's live time. It reads the rankings scrape from just before then from the file's git history (`rankings.snapshot_before` via the GitHub API with the workflow token, then `fetch_snapshot`) and archives it.
+         - Week 1 can't be backfilled: its scrapes lack kickoff times, so the file's week can't be inferred (`BACKFILL_FROM_WEEK` = 2).
+       - **Backfill caveats** (why it's reported apart from the live benchmark):
+         - News only exists from Oct 24, so weeks 2–6 packets have no news, and the AI can't use the late news that's its main edge.
+         - There are no FantasyPros projections before Oct 25 (usage-based catches convert the formats).
+         - nflverse's weekly roster status for a past week may reflect later changes.
+         - If the model's training data covered these games, its answers could be contaminated; unlikely for a model released before the season, but not provable.
+         - Backfilling week 7 overwrites the archived Oct 25 rankings scrape with the 3am ET version.
+       - **Dry run on real data** (baseline only, no AI, Oct 27): 180 matchups over weeks 2–7, each mapped to the right week's Sunday ~3am ET scrape. Of 176 scored, the baseline hit 89/175 (51%) and the raw consensus 83/172 (48%): close calls are coin flips for the experts, the bar the AI has to clear. (The earlier 20-pair week 7 dry run: 6/17 each.)
      - **Actual points:** each player's PPR/half/standard points from the nflverse weekly stats the daily job already loads. A player who didn't play scores 0.
      - **Picks scored per matchup:** a pick hits when the chosen player outscores the other in the asked scoring. Four picks are scored side by side:
        - AI pick (what the user saw);

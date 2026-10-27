@@ -231,6 +231,21 @@ class RecommendationRow(TypedDict):
     visitor: str | None  # salted hash of the IP; None outside the web app
 
 
+class EvaluationRow(TypedDict):
+    """A recommendation scored against what happened (step 6a). Hits are 1/0, or None for a tie."""
+
+    rec_id: str
+    scored_at: str  # ISO 8601, UTC
+    season: int
+    week: int
+    points_json: str  # {player_id: actual points in the question's scoring}
+    top_scorer: str | None  # None when the top score is tied
+    pick_hit: int | None  # the pick shown (AI, or the baseline when the AI wasn't used)
+    baseline_hit: int | None
+    consensus_pick: str | None  # raw FantasyPros consensus; None when it can't choose
+    consensus_hit: int | None
+
+
 # Postgres REAL is single precision, so floats are DOUBLE PRECISION (same meaning in SQLite).
 _SQL_TYPES: dict[type, str] = {str: "TEXT", int: "INTEGER", float: "DOUBLE PRECISION"}
 
@@ -291,6 +306,7 @@ TABLES: dict[str, Table] = {
         Table("decision_cache", DecisionCacheRow, ("cache_key",)),
         Table("projections", ProjectionRow, ("season", "week", "fetched_date", "fantasypros_id")),
         Table("recommendations", RecommendationRow, ("rec_id",)),
+        Table("evaluations", EvaluationRow, ("rec_id",)),
     )
 }
 
@@ -558,26 +574,43 @@ class Database:
 
     # --- rankings --------------------------------------------------------------
 
-    def latest_ranking(self, player_id: str, season: int, week: int) -> RankingRow | None:
-        return cast(
-            "RankingRow | None", self._player_row("rankings", player_id, season, "week = ?", week, "scrape_date")
+    # `through_day` (YYYY-MM-DD, UTC) limits these to archived copies from that day or earlier, so a
+    # question asked in the past (the benchmark backfill) sees only what existed then.
+
+    def _latest_copy(
+        self, table: str, date_column: str, player_id: str, season: int, week: int, through_day: str | None
+    ) -> dict[str, Any] | None:
+        return self._one(
+            f"SELECT * FROM {table} WHERE player_id = ? AND season = ? AND week = ? AND {date_column} <= ? "
+            f"ORDER BY {date_column} DESC LIMIT 1",
+            (player_id, season, week, through_day or "9999-12-31"),
         )
 
-    def rankings_for_week(self, season: int, week: int) -> list[RankingRow]:
-        """Every player's ranking from the latest scrape of the week."""
+    def latest_ranking(
+        self, player_id: str, season: int, week: int, through_day: str | None = None
+    ) -> RankingRow | None:
+        return cast(
+            "RankingRow | None", self._latest_copy("rankings", "scrape_date", player_id, season, week, through_day)
+        )
+
+    def rankings_for_week(self, season: int, week: int, through_day: str | None = None) -> list[RankingRow]:
+        """Every player's ranking from the latest scrape of the week (on or before `through_day`)."""
+        day = through_day or "9999-12-31"
         return cast(
             "list[RankingRow]",
             self.query(
                 "SELECT * FROM rankings WHERE season = ? AND week = ? AND scrape_date = "
-                "(SELECT max(scrape_date) FROM rankings WHERE season = ? AND week = ?)",
-                (season, week, season, week),
+                "(SELECT max(scrape_date) FROM rankings WHERE season = ? AND week = ? AND scrape_date <= ?)",
+                (season, week, season, week, day),
             ),
         )
 
-    def latest_projection(self, player_id: str, season: int, week: int) -> ProjectionRow | None:
+    def latest_projection(
+        self, player_id: str, season: int, week: int, through_day: str | None = None
+    ) -> ProjectionRow | None:
         return cast(
             "ProjectionRow | None",
-            self._player_row("projections", player_id, season, "week = ?", week, "fetched_date"),
+            self._latest_copy("projections", "fetched_date", player_id, season, week, through_day),
         )
 
     def latest_rankings_week(self, season: int) -> int | None:
@@ -644,9 +677,54 @@ class Database:
 
     # --- decisions -----------------------------------------------------------------
 
+    def has_recommendations(self, season: int, week: int, visitor: str) -> bool:
+        return (
+            self._one(
+                "SELECT 1 AS x FROM recommendations WHERE season = ? AND week = ? AND visitor = ? LIMIT 1",
+                (season, week, visitor),
+            )
+            is not None
+        )
+
     def cached_decision(self, cache_key: str) -> DecisionCacheRow | None:
         return cast(
             "DecisionCacheRow | None", self._one("SELECT * FROM decision_cache WHERE cache_key = ?", (cache_key,))
+        )
+
+    # --- evaluation ---------------------------------------------------------------------
+
+    def week_games(self, season: int, week: int) -> list[GameRow]:
+        return cast("list[GameRow]", self.query("SELECT * FROM games WHERE season = ? AND week = ?", (season, week)))
+
+    def player_week(self, player_id: str, season: int, week: int) -> PlayerWeekRow | None:
+        return cast("PlayerWeekRow | None", self._player_row("player_weeks", player_id, season, "week = ?", week))
+
+    def team_has_stats(self, season: int, week: int, team: str) -> bool:
+        """Whether any player's stats for `team` in `week` are loaded (so its game is in the data)."""
+        return (
+            self._one(
+                "SELECT 1 AS x FROM player_weeks WHERE season = ? AND week = ? AND team = ? LIMIT 1",
+                (season, week, team),
+            )
+            is not None
+        )
+
+    def unscored_recommendations(self) -> list[RecommendationRow]:
+        return cast(
+            "list[RecommendationRow]",
+            self.query(
+                "SELECT r.* FROM recommendations r LEFT JOIN evaluations e ON e.rec_id = r.rec_id "
+                "WHERE e.rec_id IS NULL ORDER BY r.created_at"
+            ),
+        )
+
+    def scored_recommendations(self, season: int) -> list[dict[str, Any]]:
+        """Every scored recommendation of the season: the evaluation joined with what was shown."""
+        return self.query(
+            "SELECT e.*, r.scoring, r.pick, r.baseline_pick, r.confidence, r.source, r.visitor, r.player_ids "
+            "FROM evaluations e JOIN recommendations r ON r.rec_id = e.rec_id "
+            "WHERE e.season = ? ORDER BY e.week, r.created_at",
+            (season,),
         )
 
     # --- web app ---------------------------------------------------------------------

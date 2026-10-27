@@ -248,6 +248,7 @@ def load_context(db: Database, player_id: str, q: Question) -> PlayerContext:
         elif team is not None:
             missed = db.team_games(q.season, team, after, through)
     since, until = utc_iso(q.as_of - NEWS_LOOKBACK), utc_iso(q.as_of)
+    asked_on = until[:10]  # rankings and projections archived on or before the day asked
     news = db.news_for_player(player_id, since, until, NEWS_PER_PLAYER)
     # A status only counts for this week if it came after the team's previous game ended, so
     # last week's "ruled out" or an in-game "won't return" doesn't carry over.
@@ -261,14 +262,14 @@ def load_context(db: Database, player_id: str, q: Question) -> PlayerContext:
         player=player,
         team=team,
         roster=roster,
-        ranking=db.latest_ranking(player_id, q.season, q.week),
+        ranking=db.latest_ranking(player_id, q.season, q.week, through_day=asked_on),
         usage=usage,
         injury=db.injury(player_id, q.season, q.week),
         game=db.team_game(q.season, q.week, team) if team else None,
         news=news,
         on_bye=on_bye,
         missed_games=missed,
-        projection=db.latest_projection(player_id, q.season, q.week),
+        projection=db.latest_projection(player_id, q.season, q.week, through_day=asked_on),
         news_status=news_status,
     )
 
