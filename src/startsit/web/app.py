@@ -30,6 +30,7 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 
 from startsit.db import Database
 from startsit.decide import HIGH_MARGIN, MEDIUM_MARGIN, Decision, decide, decide_llm, record_recommendation
+from startsit.evaluate import CONFIDENCES, Report, build_report
 from startsit.evidence import EvidencePacket, PlayerLookupError, current_week, eastern_time, packet_for_names
 from startsit.llm import BudgetedLLM, visitor_id
 from startsit.names import PlayerMatcher
@@ -42,6 +43,24 @@ HERE = Path(__file__).parent
 MAX_PLAYERS = 2  # the page compares two players (the engine takes more)
 MAX_NAME_LENGTH = 60
 PLAYER_CACHE_SECONDS = 3600  # the players table changes once a day, with the ingest
+RECORD_CACHE_SECONDS = 3600  # results change once a day, when the stats refresh scores the new games
+
+# The track record page's groups, in the order shown (keys from startsit.evaluate.group_of).
+RECORD_GROUPS = [
+    {
+        "key": "benchmark",
+        "title": "Weekly benchmark",
+        "about": "30 close matchups a week (players the experts rank side by side), asked Sunday morning "
+        "with that morning's news, like setting a lineup.",
+    },
+    {
+        "key": "backfill",
+        "title": "Earlier weeks (backfill)",
+        "about": "The same kind of matchups, asked as of past Sunday mornings with the rankings from then. "
+        "News collection started Oct 24, so most of these had no late news: a harder test for the AI.",
+    },
+    {"key": "users", "title": "Questions asked on this site", "about": "Every answer shown here, scored the same way."},
+]
 
 SOURCE_LABELS = {"llm": "AI pick", "cache": "AI pick", "baseline": "Baseline pick"}
 KIND_LABELS = {
@@ -131,6 +150,7 @@ def create_app(
         kind_labels=KIND_LABELS,
         high_margin=HIGH_MARGIN,
         medium_margin=MEDIUM_MARGIN,
+        confidences=CONFIDENCES,
     )
     templates.env.filters["eastern"] = eastern_time
     templates.env.filters["link_citations"] = link_citations
@@ -138,6 +158,7 @@ def create_app(
 
     setup_done = False  # create missing tables once per process, not on every request
     matcher_cache: dict[str, Any] = {}
+    record_cache: dict[int, tuple[float, Report]] = {}
 
     def get_db() -> Iterator[Database]:
         nonlocal setup_done
@@ -222,6 +243,19 @@ def create_app(
         except Exception:  # logging must never cost the user their answer
             log.exception("recording the recommendation failed")
         return {"packet": packet, "decision": decision, "names": packet.names}
+
+    @app.get("/record", response_class=HTMLResponse)
+    def record(request: Request, db: DB) -> HTMLResponse:
+        season = db.latest_season()
+        report = None
+        if season is not None:
+            cached = record_cache.get(season)
+            if cached is None or time.monotonic() - cached[0] >= RECORD_CACHE_SECONDS:
+                cached = record_cache[season] = (time.monotonic(), build_report(db, season))
+            report = cached[1]
+        return templates.TemplateResponse(
+            request, "record.html", {"info": week_info(db), "report": report, "groups": RECORD_GROUPS}
+        )
 
     @app.get("/healthz")
     def health() -> JSONResponse:

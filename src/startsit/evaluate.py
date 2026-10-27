@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -132,6 +133,12 @@ class Rate:
     def pct(self) -> float | None:
         return self.hits / self.decided if self.decided else None
 
+    @property
+    def margin(self) -> float | None:
+        """The 95% margin of error of `pct` (normal approximation), as a fraction."""
+        p = self.pct
+        return 1.96 * math.sqrt(p * (1 - p) / self.decided) if p is not None else None
+
     def __str__(self) -> str:
         return f"{self.hits}/{self.decided} ({self.pct:.0%})" if self.pct is not None else "-"
 
@@ -170,11 +177,39 @@ class Summary:
             self.by_confidence[row["confidence"]].add(row["pick_hit"])
 
 
+@dataclass(frozen=True)
+class Override:
+    """A scored matchup where the AI's pick went against the baseline."""
+
+    week: int
+    scoring: str
+    ai_pick: str  # name
+    ai_points: float
+    baseline_pick: str
+    baseline_points: float
+    hit: int | None  # the AI's pick: 1/0, None for a tie
+
+    @staticmethod
+    def from_row(row: dict[str, Any]) -> Override:
+        names = {p["player_id"]: p["name"] for p in json.loads(row["packet_json"])["players"]}
+        points = json.loads(row["points_json"])
+        return Override(
+            week=row["week"],
+            scoring=row["scoring"],
+            ai_pick=names[row["pick"]],
+            ai_points=points[row["pick"]],
+            baseline_pick=names[row["baseline_pick"]],
+            baseline_points=points[row["baseline_pick"]],
+            hit=row["pick_hit"],
+        )
+
+
 @dataclass
 class Report:
     season: int
     weeks: dict[str, dict[int, Summary]]  # group ("users" | "benchmark" | "backfill") -> week -> summary
     totals: dict[str, Summary]
+    overrides: dict[str, list[Override]] = field(default_factory=dict)  # group -> newest week first
 
 
 def group_of(row: dict[str, Any]) -> str:
@@ -184,11 +219,19 @@ def group_of(row: dict[str, Any]) -> str:
 def build_report(db: Database, season: int) -> Report:
     weeks: dict[str, dict[int, Summary]] = defaultdict(lambda: defaultdict(Summary))
     totals: dict[str, Summary] = defaultdict(Summary)
+    overrides: dict[str, list[Override]] = defaultdict(list)
     for row in db.scored_recommendations(season):
         group = group_of(row)
         weeks[group][row["week"]].add(row)
         totals[group].add(row)
-    return Report(season, {g: dict(w) for g, w in weeks.items()}, dict(totals))
+        if row["source"] in AI_SOURCES and row["pick"] != row["baseline_pick"]:
+            overrides[group].append(Override.from_row(row))
+    return Report(
+        season,
+        {g: dict(w) for g, w in weeks.items()},
+        dict(totals),
+        {g: sorted(o, key=lambda x: -x.week) for g, o in overrides.items()},
+    )
 
 
 def report_text(report: Report) -> str:

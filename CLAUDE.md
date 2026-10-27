@@ -109,7 +109,7 @@ Many users will ask about the same players, so cache per-player results.
 5d. ~~Wider layout~~ (Oct 27 2026): up to ~1150 px wide; header on one row (title left, week/dates/freshness right); the two player inputs side by side with scoring + button on one row; the answer card in two columns (verdict, tags and explainer left; summary and reasons right, capped at a readable width); evidence as a comparison grid (one row per kind, one column per player, picked player shaded; `PlayerEvidence.items_of`); "How it works" collapsed; small citation chips. Phones stack everything, with each evidence row labeled by player. Validation got more forgiving after a live near-tie failed twice on format: citations that aren't ids (e.g. the packet's header line) are dropped, and a summary without citations is accepted (the number check still applies); `PROMPT_VERSION` 4. Re-check: 8/8 real matchups answered by the AI on the first call. Follow-up: scoring is a segmented toggle (still radio buttons), the button sits at the right edge (full width on phones), and the same-name hint is gone (the ambiguity error gives the example).
 5e. Limit and Reddit checks (Oct 27 2026): `/diag/limits` (`startsit/web/diag.py`) shows the masked IP, which headers carried it, the visitor hash, and usage of each AI limit (no AI call). It's registered only when `VERCEL_ENV=preview`, and preview deployments sit behind Vercel's login, so production never serves it. Reddit gets read by the ingest jobs, not the web app, so it's tested from GitHub Actions: `test_live.py::test_reddit_is_readable_from_this_runner` (no API quota; Actions → integration → Run workflow).
 6. **Weekly evaluation, then Reddit as a crowd signal** (planned Oct 27 2026; 6a first, since it measures everything else).
-   - **6a. Evaluation** (scoring and benchmark built Oct 27 2026; the track record page is next):
+   - **6a. Evaluation** (built Oct 27 2026: scoring, benchmark, backfill and the track record page):
      - **Built:**
        - `startsit/evaluate.py` scores into `evaluations`: points per player (rounded to 2 decimals), the top scorer, and hits as 1/0/None (a tie counts for neither side) for the shown pick, the baseline and the raw consensus.
        - A matchup waits until every player's team game is in `player_weeks`. Checked on real week 7 data: Monday night's DAL@PHI matchups stayed pending.
@@ -130,6 +130,11 @@ Many users will ask about the same players, so cache per-player results.
          - nflverse's weekly roster status for a past week may reflect later changes.
          - If the model's training data covered these games, its answers could be contaminated; unlikely for a model released before the season, but not provable.
          - Backfilling week 7 overwrites the archived Oct 25 rankings scrape with the 3am ET version.
+       - **Track record page** (`/record`, linked from the header):
+         - One card per group, in this order: weekly benchmark, backfill, questions asked on the site.
+         - Each card has: AI / consensus / baseline hit-rate tiles (AI with a 95% margin of error); a small-sample note under 100 decided matchups; a by-week table; the AI-vs-baseline overrides with the list of matchups (pick, points, right/wrong); and hit rate by confidence.
+         - The report is cached per process for an hour (`RECORD_CACHE_SECONDS`); it changes once a day.
+         - The page frame is shared via `templates/_layout.html`.
        - **Dry run on real data** (baseline only, no AI, Oct 27): 180 matchups over weeks 2–7, each mapped to the right week's Sunday ~3am ET scrape. Of 176 scored, the baseline hit 89/175 (51%) and the raw consensus 83/172 (48%): close calls are coin flips for the experts, the bar the AI has to clear. (The earlier 20-pair week 7 dry run: 6/17 each.)
      - **Actual points:** each player's PPR/half/standard points from the nflverse weekly stats the daily job already loads. A player who didn't play scores 0.
      - **Picks scored per matchup:** a pick hits when the chosen player outscores the other in the asked scoring. Four picks are scored side by side:
