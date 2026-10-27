@@ -17,9 +17,9 @@ import json
 import logging
 import time
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
-from startsit.db import Database, GameRow
+from startsit.db import Database, GameRow, utc_day, utc_now
 from startsit.decide import decide, record_recommendation
 from startsit.evaluate import BACKFILL, BENCHMARK
 from startsit.evidence import EASTERN, build_packet, kickoff
@@ -112,7 +112,7 @@ def matchups(db: Database, season: int, week: int, now: datetime) -> list[Matchu
     """Neighbors in the consensus ranks, per position, cycling through the scoring formats."""
     ranked = [
         r
-        for r in db.rankings_for_week(season, week, through_day=now.astimezone(UTC).date().isoformat())
+        for r in db.rankings_for_week(season, week, through_day=utc_day(now))
         if r["player_id"] is not None and r["ecr"] is not None and r["proj_ppr"] is not None
     ]
     out: list[Matchup] = []
@@ -138,7 +138,7 @@ def run(
     week: int,
     as_of: datetime | None = None,
     tag: str = BENCHMARK,
-    clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    clock: Callable[[], datetime] = utc_now,
     sleep: Callable[[float], None] = time.sleep,
 ) -> int:
     """Ask the AI the week's benchmark matchups and log the answers; returns how many were logged.

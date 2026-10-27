@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Annotated, Any, cast
+from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
@@ -28,7 +29,7 @@ from fastapi.templating import Jinja2Templates
 from markupsafe import Markup, escape
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
-from startsit.db import Database
+from startsit.db import Database, utc_now
 from startsit.decide import HIGH_MARGIN, MEDIUM_MARGIN, Decision, decide, decide_llm, record_recommendation
 from startsit.evaluate import CONFIDENCES, Report, build_report
 from startsit.evidence import EvidencePacket, PlayerLookupError, current_week, eastern_time, packet_for_names
@@ -127,13 +128,29 @@ def client_address(request: Request) -> str:
 
 
 def clean_names(players: list[str]) -> list[str]:
-    return [p.strip()[:MAX_NAME_LENGTH] for p in players if p.strip()]
+    # The form has MAX_PLAYERS inputs; never process more than a few fields from a crafted post.
+    return [p.strip()[:MAX_NAME_LENGTH] for p in players[: 2 * MAX_PLAYERS] if p.strip()]
+
+
+def safe_href(url: str | None) -> str | None:
+    """`url` if it's a plain web link, else None: source links come from outside feeds, and a
+    `javascript:` or `data:` link must never be clickable (the CSP would block it too)."""
+    if not url:
+        return None
+    return url if urlsplit(url.strip()).scheme.lower() in ("http", "https") else None
+
+
+def cross_site(request: Request) -> bool:
+    """Whether a browser says this request came from another site (Sec-Fetch-Site), e.g. a page
+    making its visitors post questions here to spend the AI budget. Non-browser clients don't
+    send the header and are left to the per-visitor limits."""
+    return request.headers.get("sec-fetch-site") == "cross-site"
 
 
 def create_app(
     db_target: str | None = None,
     llm_factory: Callable[[Database, str | None], BudgetedLLM | None] = decide_llm,
-    clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    clock: Callable[[], datetime] = utc_now,
     diagnostics: bool | None = None,
 ) -> FastAPI:
     """The app. `diagnostics` adds /diag/limits; by default only on Vercel preview deployments."""
@@ -155,6 +172,7 @@ def create_app(
     templates.env.filters["eastern"] = eastern_time
     templates.env.filters["link_citations"] = link_citations
     templates.env.filters["game_day"] = game_day
+    templates.env.filters["safe_href"] = safe_href
 
     setup_done = False  # create missing tables once per process, not on every request
     matcher_cache: dict[str, Any] = {}
@@ -212,6 +230,8 @@ def create_app(
         players: Annotated[list[str], Form()] = [],  # noqa: B006 (FastAPI copies form defaults)
         scoring: Annotated[str, Form()] = "ppr",
     ) -> HTMLResponse:
+        if cross_site(request):
+            return HTMLResponse("Questions can only be asked from this site.", status_code=403)
         names = clean_names(players)[:MAX_PLAYERS]
         chosen: Scoring = scoring if scoring in SCORINGS else "ppr"
         context: dict[str, Any] = {"players": names + [""] * max(0, 2 - len(names)), "scoring": chosen}

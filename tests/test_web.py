@@ -236,3 +236,40 @@ def test_an_unexpected_error_shows_a_message_instead_of_a_blank_page(path, monke
     r = ask(client_for(path), "Alpha Back", "Bravo Back", hx=True)
     assert r.status_code == 200 and "Something went wrong on our side" in r.text and 'role="alert"' in r.text
     assert "answering ['Alpha Back', 'Bravo Back'] failed" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "url,expected",
+    [
+        ("https://www.rotowire.com/football/player/x", "https://www.rotowire.com/football/player/x"),
+        ("http://example.com/a", "http://example.com/a"),
+        ("javascript:alert(1)", None),
+        (" JavaScript:alert(1)", None),
+        ("data:text/html;base64,xx", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_only_web_links_are_rendered(url, expected):
+    assert web.safe_href(url) == expected
+
+
+def test_a_feed_link_that_is_not_a_web_link_is_not_rendered(path):
+    with Database(path) as db:
+        db.execute("UPDATE rankings SET source_url = 'javascript:alert(1)' WHERE player_id = 'A'")
+    r = ask(client_for(path), "Alpha Back", "Bravo Back", hx=True)
+    assert "javascript:" not in r.text and "Start <strong>Alpha Back</strong>" in r.text
+
+
+def test_cross_site_posts_are_refused(path):
+    client = client_for(path)
+    r = client.post("/ask", data={"players": ["Alpha Back", "Bravo Back"]}, headers={"Sec-Fetch-Site": "cross-site"})
+    assert r.status_code == 403
+    same = client.post(
+        "/ask", data={"players": ["Alpha Back", "Bravo Back"]}, headers={"Sec-Fetch-Site": "same-origin"}
+    )
+    assert same.status_code == 200
+
+
+def test_only_the_first_few_form_fields_are_read():
+    assert web.clean_names([" ", "Alpha Back", *["x"] * 10_000]) == ["Alpha Back", "x", "x"]

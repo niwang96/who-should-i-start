@@ -16,7 +16,9 @@ slightly; the caps sit below Gemini's real limits to leave room for that.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
+import logging
 import os
 import time
 import urllib.error
@@ -26,7 +28,9 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
-from startsit.db import Database
+from startsit.db import Database, utc_now
+
+log = logging.getLogger("startsit.llm")
 
 DEFAULT_MODEL = "gemini-3.5-flash-lite"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -150,9 +154,22 @@ def visitor_id(address: str, salt: str | None = None) -> str:
     """A pseudonymous visitor key: a salted hash of the IP address, so raw addresses are never stored.
 
     The salt comes from $VISITOR_SALT; keep it secret, or IPv4 hashes could be reversed by brute force.
+    IPv6 addresses count per /64 network: one home or phone gets a whole /64 and can rotate through
+    it freely, so per-address limits would be trivial to dodge.
     """
     salt = salt if salt is not None else os.environ.get("VISITOR_SALT", "")
-    return hashlib.sha256(f"{salt}|{address}".encode()).hexdigest()[:16]
+    return hashlib.sha256(f"{salt}|{visitor_network(address)}".encode()).hexdigest()[:16]
+
+
+def visitor_network(address: str) -> str:
+    """The address a visitor is counted by: IPv4 as is, IPv6 as its /64 network (anything else as given)."""
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return address
+    if ip.version == 6:
+        return str(ipaddress.ip_network(f"{ip}/64", strict=False))
+    return str(ip)
 
 
 @dataclass
@@ -170,7 +187,7 @@ class BudgetedLLM:
     visitor: str | None = None
     visitor_limits: Sequence[VisitorLimit] = ()
     per_minute: int = REQUESTS_PER_MINUTE
-    clock: Callable[[], datetime] = field(default=lambda: datetime.now(UTC), repr=False)
+    clock: Callable[[], datetime] = field(default=utc_now, repr=False)
 
     def remaining(self, now: datetime | None = None) -> int:
         """Calls left today for this purpose."""
@@ -200,3 +217,20 @@ class BudgetedLLM:
 
     def _record(self, ok: bool) -> None:
         self.db.record_llm_call(self.purpose, self.provider.model, ok, self.clock(), self.visitor)
+
+
+def budgeted_gemini(
+    db: Database,
+    purpose: str,
+    daily_budget: int,
+    unavailable: str,
+    visitor: str | None = None,
+    visitor_limits: Sequence[VisitorLimit] = (),
+) -> BudgetedLLM | None:
+    """A budgeted Gemini client for `purpose`, or None (logging "<unavailable>: <why>") without a key."""
+    try:
+        provider = GeminiProvider()
+    except LLMError as e:
+        log.warning("%s: %s", unavailable, e)
+        return None
+    return BudgetedLLM(provider, db, purpose, daily_budget, visitor=visitor, visitor_limits=visitor_limits)

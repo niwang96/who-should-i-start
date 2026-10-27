@@ -32,12 +32,12 @@ from startsit.db import Database, DecisionCacheRow, RecommendationRow, utc_iso
 from startsit.evidence import EvidencePacket, PlayerLookupError, packet_for_names
 from startsit.llm import (
     BudgetedLLM,
-    GeminiProvider,
     LLMError,
     QuotaExceeded,
     RateLimited,
     VisitorLimit,
     VisitorLimited,
+    budgeted_gemini,
 )
 from startsit.scoring import SCORINGS, Scoring
 
@@ -313,12 +313,7 @@ def with_citations(decision: Decision, packet: EvidencePacket) -> Decision:
 
 def decide_llm(db: Database, visitor: str | None = None) -> BudgetedLLM | None:
     """The budgeted Gemini client for decisions (per visitor in the web app), or None without a key."""
-    try:
-        provider = GeminiProvider()
-    except LLMError as e:
-        log.warning("AI disabled: %s", e)
-        return None
-    return BudgetedLLM(provider, db, "decide", DECIDE_DAILY_LLM_BUDGET, visitor=visitor, visitor_limits=VISITOR_LIMITS)
+    return budgeted_gemini(db, "decide", DECIDE_DAILY_LLM_BUDGET, "AI disabled", visitor, VISITOR_LIMITS)
 
 
 def decide(db: Database, packet: EvidencePacket, llm: BudgetedLLM | None) -> Decision:

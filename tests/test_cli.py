@@ -9,7 +9,7 @@ from test_news import RSS
 from test_rankings import rank_row
 from test_rankings import raw as rankings_raw
 
-from startsit import decide, http
+from startsit import decide, http, llm
 from startsit.db import Database
 from startsit.ingest import __main__ as ingest_main
 from startsit.ingest import news, rankings
@@ -131,7 +131,7 @@ def test_decide_cli_with_and_without_the_ai(tmp_path, monkeypatch, capsys):
         "summary": "Alpha Back projects higher [E2] and his team is favored [E3].",
         "baseline_disagreement": "",
     }
-    monkeypatch.setattr(decide, "GeminiProvider", lambda: FakeProvider(responses=[answer]))
+    monkeypatch.setattr(llm, "GeminiProvider", lambda: FakeProvider(responses=[answer]))
     run_cli(monkeypatch, decide.main, "Alpha Back", "Bravo Back", "--db", path)
     out = capsys.readouterr().out
     assert "Start Alpha Back (medium confidence; llm)\n  Alpha Back projects higher [E2]" in out

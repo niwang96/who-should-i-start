@@ -34,7 +34,7 @@ from startsit.db import TABLES, Database
 from startsit.evidence import current_week
 from startsit.features import compute_usage_features
 from startsit.ingest import news, news_extract, nflverse, projections, rankings
-from startsit.llm import BudgetedLLM, GeminiProvider, LLMError
+from startsit.llm import BudgetedLLM, budgeted_gemini
 
 log = logging.getLogger("startsit.ingest")
 
@@ -160,11 +160,12 @@ def run_evaluation(db: Database) -> int:
 
 
 def benchmark_llm(db: Database) -> BudgetedLLM | None:
-    try:
-        return BudgetedLLM(GeminiProvider(), db, "benchmark", benchmark.BENCHMARK_DAILY_LLM_BUDGET)
-    except LLMError as e:
-        log.warning("benchmark skipped: %s", e)
-        return None
+    return budgeted_gemini(db, "benchmark", benchmark.BENCHMARK_DAILY_LLM_BUDGET, "benchmark skipped")
+
+
+def games_frame(db: Database, season: int) -> pl.DataFrame:
+    """The season's schedule from the database, as the frame the rankings ingest matches against."""
+    return pl.DataFrame(db.games(season), schema=TABLES["games"].polars_schema())
 
 
 def run_benchmark(db: Database, season: int, now: datetime | None = None) -> int:
@@ -196,8 +197,7 @@ def run_backfill(db: Database, season: int, now: datetime | None = None) -> int:
     if llm is None or llm.remaining(now) < benchmark.calls_needed(db, season, week):
         return 0
     sha = rankings.snapshot_before(as_of)
-    games = pl.DataFrame(db.games(season), schema=TABLES["games"].polars_schema())
-    ranked = rankings.build_rankings(rankings.fetch_snapshot(sha), games, season) if sha else None
+    ranked = rankings.build_rankings(rankings.fetch_snapshot(sha), games_frame(db, season), season) if sha else None
     if ranked is None or ranked.is_empty() or int(ranked["week"][0]) != week:
         log.warning("backfill week %s: no rankings scrape for that week before %s", week, as_of)
         return 0
@@ -242,14 +242,10 @@ def main() -> None:
                 log.info("daily stats refresh is due; running it first")
                 _optional("daily stats refresh", lambda: run_stats(db, args.season))
             else:
-                games = pl.DataFrame(db.games(args.season), schema=TABLES["games"].polars_schema())
+                games = games_frame(db, args.season)
                 _optional("rankings re-check", lambda: run_rankings(db, rankings.fetch(), games, args.season))
         if args.only in (None, "news"):
-            try:
-                llm: BudgetedLLM | None = BudgetedLLM(GeminiProvider(), db, "news", NEWS_DAILY_LLM_BUDGET)
-            except LLMError as e:
-                log.warning("news extraction disabled: %s", e)
-                llm = None
+            llm = budgeted_gemini(db, "news", NEWS_DAILY_LLM_BUDGET, "news extraction disabled")
             run_news(db, news.fetch_all(), llm, args.season)
         if args.only == "news":
             _optional("benchmark", lambda: run_benchmark(db, args.season))

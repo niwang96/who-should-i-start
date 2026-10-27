@@ -77,6 +77,14 @@ Many users will ask about the same players, so cache per-player results.
 - **Web app:** FastAPI on Vercel's free Python functions; simple HTMX/Jinja frontend (no JS framework for MVP).
 - **DB:** New columns are added to existing tables automatically on connect (`Database._add_missing_columns`; they must be nullable). Supabase (Postgres) via `DATABASE_URL` (session pooler URI; the direct connection is IPv6-only, which Actions/Vercel can't reach; the Claude Code cloud env can't reach Postgres at all). Local SQLite when unset. All SQL lives in `startsit/db.py` and is written once for both backends; tests run on both.
 - **Code quality:** ruff (lint + format) and mypy run in CI alongside pytest; CI fails below **95% branch coverage** (`pyproject.toml`). Live integration tests (`tests/test_live.py`, marker `live`, deselected by default) hit the real services with a minimal quota (2–4 Gemini calls, 1 FantasyPros call) via `integration.yml`: only on merges to `main` touching source adapters, and by hand (Actions → integration → Run workflow, any branch). No schedule: the ingest jobs already call every service.
+- **Web security** (review Oct 27 2026):
+  - All SQL values are parameterized; f-strings only splice in table/column names from code.
+  - Templates autoescape. Source links are rendered only if http(s) (`web.app.safe_href`), behind a strict CSP.
+  - Cross-site form posts are refused (`Sec-Fetch-Site: cross-site` → 403), so another page can't make its visitors spend the AI budget.
+  - Visitors are counted per IPv4 address and per IPv6 /64 (`llm.visitor_network`), since one home gets a whole /64.
+  - Only the first few form fields are read.
+  - Workflow inputs reach shells only through env vars; the ingest job's token is `contents: read`.
+  - Accepted risk: news text from feeds reaches the LLM prompts (prompt injection). Its effect is bounded: picks must be one of the asked players, every number must be in the packet, and the global daily budget caps abuse.
 - **Access:** the CLIs (`python -m startsit.ingest`, `python -m startsit.decide` for debugging) aren't network endpoints; they reach production only with the secrets. Secrets live only in GitHub Actions secrets, Vercel env vars and the Claude Code env. On Postgres all tables have RLS enabled with no policies (set on connect), which blocks Supabase's REST API; the app connects as the tables' owner.
 - **LLM:** Gemini free tier, model **`gemini-3.5-flash-lite`** (decided Oct 24 2026; 500 requests/day vs 20 for `gemini-3.5-flash`). Read the model id from `GEMINI_MODEL` (default `gemini-3.5-flash-lite`) behind a provider interface so it can be swapped. Newer Flash versions listed on the key (3.6/3.7/3.8) aren't usable for this project. Unit tests use a fake provider and never call a real LLM.
 
