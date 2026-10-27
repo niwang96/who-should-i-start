@@ -1,15 +1,26 @@
+{# One row per kind of evidence, one column per player, so the two can be read across. #}
 <section class="evidence">
   <h2>The evidence</h2>
-  {% for p in packet.players %}
-  <div class="player{% if decision and p.player_id == decision.pick %} picked{% endif %}">
-    <h3>{{ p.name }} <span class="pos">{{ p.position }}, {{ p.team or "free agent" }}</span></h3>
-    <p class="baseline">Baseline {{ "%.1f"|format(p.score.points) }} pts{% if p.score.note %} ({{ p.score.note }}){% endif %}</p>
-    <ul>
-      {% for item in p.items %}
-      <li id="{{ item.id }}"><span class="id">{{ item.id }}</span> <span class="kind">{{ kind_labels[item.kind] }}</span>
-        {{ item.text }}{% if item.source_url %} <a href="{{ item.source_url }}" rel="noopener nofollow" target="_blank">source</a>{% endif %}</li>
+  <div class="compare">
+    <div class="corner" aria-hidden="true"></div>
+    {% for p in packet.players %}
+    <div class="head{% if decision and p.player_id == decision.pick %} picked{% endif %}">
+      <strong>{{ p.name }}</strong> <span class="pos">{{ p.position }}, {{ p.team or "free agent" }}</span>
+      <span class="baseline">Baseline {{ "%.1f"|format(p.score.points) }} pts{% if p.score.note %} ({{ p.score.note }}){% endif %}</span>
+    </div>
+    {% endfor %}
+    {% for kind, label in kind_labels.items() if packet.items|selectattr("kind", "equalto", kind)|list %}
+    <div class="kind">{{ label }}</div>
+    {% for p in packet.players %}
+    <div class="cell{% if decision and p.player_id == decision.pick %} picked{% endif %}">
+      <span class="who">{{ p.name }}</span>
+      {% for item in p.items_of(kind) %}
+      <p id="{{ item.id }}"><span class="id">{{ item.id }}</span> {{ item.text }}{% if item.source_url %} <a class="src" href="{{ item.source_url }}" rel="noopener nofollow" target="_blank">source</a>{% endif %}</p>
+      {% else %}
+      <p class="none">—</p>
       {% endfor %}
-    </ul>
+    </div>
+    {% endfor %}
+    {% endfor %}
   </div>
-  {% endfor %}
 </section>

@@ -48,7 +48,7 @@ def test_home_page_shows_the_week_and_data_freshness(path):
     r = client_for(path).get("/")
     assert r.status_code == 200
     assert "Answering for <strong>Week 7, 2026</strong> · games Sun Oct 25 \N{EN DASH} Sun Oct 25" in r.text
-    assert "Rankings as of 2026-10-24" in r.text and "News checked never" in r.text and "Stats updated 20" in r.text
+    assert "Rankings 2026-10-24" in r.text and "News never" in r.text and "Stats 20" in r.text
     assert "FantasyPros" in r.text  # attribution
     assert r.headers["content-security-policy"].startswith("default-src 'self'")
     assert client_for(path).get("/static/htmx-2.0.4.min.js").status_code == 200
@@ -174,3 +174,12 @@ def test_citation_links_escape_text_and_skip_unknown_ids():
     assert (
         html == '&lt;b&gt;x&lt;/b&gt; <a class="cite" href="#E1">E1</a> and <a class="cite" href="#E7">E7</a>, not E99'
     )
+
+
+def test_evidence_is_a_side_by_side_comparison(path):
+    r = ask(client_for(path, FakeProvider(responses=[ANSWER])), "Alpha Back", "Bravo Back", hx=True)
+    # One row per kind of evidence (only kinds either player has), one column per player.
+    assert r.text.count('class="kind"') == 3  # consensus, projection, matchup
+    assert '<div class="kind">Expert consensus</div>' in r.text and "Injury report" not in r.text
+    assert r.text.count('class="cell picked"') == 3 and r.text.count('class="cell"') == 3
+    assert r.text.index('id="E1"') < r.text.index('id="E4"') < r.text.index('id="E2"')  # read across, row by row

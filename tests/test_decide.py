@@ -89,7 +89,6 @@ def test_validate_accepts_a_grounded_answer():
         (answer(pick="P1"), "baseline_disagreement must explain why"),
         (answer(summary=" "), "summary is required"),
         (answer(summary="x" * 901), "at most 900 characters"),
-        (answer(summary="Nacua is better."), "summary must cite evidence ids"),
         (answer(summary="Start Puka Smith [E3]."), "these player names are mixed up: Puka Smith"),
         (answer(summary="Smith is out [E9]."), "text cites ids not in the packet: E9"),
         (answer(summary="Nacua projects 31.2 points."), "these numbers aren't in the evidence: 31.2"),
@@ -115,6 +114,18 @@ def test_swapped_names_allow_players_who_share_a_last_name():
         "Travis Higbee",
         "Tyler Kelce",
     ]
+
+
+def test_citations_that_are_not_ids_are_dropped_and_an_uncited_summary_is_accepted():
+    factors = [
+        {"text": "Smith is ruled out.", "evidence_ids": ["E2", "Week 7 2026, half-PPR scoring. Baseline..."]},
+        {"text": "Nacua is the consensus WR1.", "evidence_ids": ["[E3]", "E4"]},
+    ]
+    decision, problems = validate(answer(factors=factors, summary="Nacua is the safer start."), make_packet())
+    assert problems == []
+    assert [f.evidence_ids for f in decision.factors] == [["E2"], ["E3", "E4"]]
+    _, problems = validate(answer(factors=[{"text": "Header only.", "evidence_ids": ["Baseline"]}] * 2), make_packet())
+    assert "every factor needs text and at least one evidence id" in problems
 
 
 def test_numbers_may_come_from_the_packet_rounded_or_as_a_difference():
