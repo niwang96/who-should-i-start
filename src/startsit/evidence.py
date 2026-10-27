@@ -123,6 +123,9 @@ class PlayerEvidence:
     kickoff: datetime | None = None  # UTC; None if unknown or no game
     game_started: bool = False  # kicked off before the question was asked (locked in most leagues)
 
+    def items_of(self, kind: EvidenceKind) -> list[EvidenceItem]:
+        return [i for i in self.items if i.kind == kind]
+
 
 @dataclass
 class EvidencePacket:

@@ -1,7 +1,7 @@
 {% if error %}
 <div class="error" role="alert">{{ error }}</div>
 {% elif locked %}
-<article class="answer">
+<article class="answer locked">
   <p class="verdict">No pick needed</p>
   {% for p in locked %}
   <p class="warning">{{ p.name }}'s game already kicked off ({{ p.kickoff|eastern }}).</p>
@@ -18,46 +18,46 @@
 {% else %}
 {% set pick = packet.player(decision.pick) %}
 <article class="answer">
-  <p class="verdict">Start <strong>{{ pick.name }}</strong></p>
-  <p class="meta">
-    <span class="confidence {{ decision.confidence }}">{{ decision.confidence|capitalize }} confidence</span>
-    <span class="source">{{ source_labels[decision.source] }}</span>
-    <span>{{ scoring_labels[packet.question.scoring] }}, week {{ packet.question.week }}</span>
-  </p>
-  {% if decision.note %}<p class="note">{{ decision.note }}</p>{% endif %}
-
-  <details class="explain">
-    <summary>What do the confidence and "{{ source_labels[decision.source] }}" mean?</summary>
-    {% if decision.source == "baseline" %}
-    <p><strong>Baseline pick:</strong> the AI wasn't used (the note above says why), so this is the
-      expert-consensus pick: the higher FantasyPros projection in your scoring format.</p>
-    <p><strong>Confidence</strong> comes from the gap between the two projections:
-      <strong>High</strong> {{ "%g"|format(high_margin) }}+ points,
-      <strong>Medium</strong> {{ "%g"|format(medium_margin) }} to {{ "%g"|format(high_margin) }} points,
-      <strong>Low</strong> under {{ "%g"|format(medium_margin) }} points (a close call).</p>
-    {% else %}
-    <p><strong>AI pick:</strong> an AI weighed only the evidence listed below, starting from the expert
-      consensus, and every reason was checked against that evidence before you saw it.</p>
-    <p><strong>Confidence</strong> is how clear-cut the choice is. <strong>High:</strong> one player is
-      clearly better, or the other may not play. <strong>Medium:</strong> a clear lean.
-      <strong>Low:</strong> a close call; either choice is reasonable. A player listed questionable or
-      doubtful is never rated High.</p>
+  <div class="verdict-col">
+    <p class="verdict">Start <strong>{{ pick.name }}</strong></p>
+    <p class="meta">
+      <span class="confidence {{ decision.confidence }}">{{ decision.confidence|capitalize }} confidence</span>
+      <span class="source">{{ source_labels[decision.source] }}</span>
+      <span>{{ scoring_labels[packet.question.scoring] }}, week {{ packet.question.week }}</span>
+    </p>
+    {% if decision.note %}<p class="note">{{ decision.note }}</p>{% endif %}
+    <details class="explain">
+      <summary>What do the confidence and "{{ source_labels[decision.source] }}" mean?</summary>
+      {% if decision.source == "baseline" %}
+      <p><strong>Baseline pick:</strong> the AI wasn't used (the note above says why), so this is the
+        expert-consensus pick: the higher FantasyPros projection in your scoring format.</p>
+      <p><strong>Confidence</strong> comes from the gap between the two projections:
+        <strong>High</strong> {{ "%g"|format(high_margin) }}+ points,
+        <strong>Medium</strong> {{ "%g"|format(medium_margin) }} to {{ "%g"|format(high_margin) }} points,
+        <strong>Low</strong> under {{ "%g"|format(medium_margin) }} points (a close call).</p>
+      {% else %}
+      <p><strong>AI pick:</strong> an AI weighed only the evidence listed below, starting from the expert
+        consensus, and every reason was checked against that evidence before you saw it.</p>
+      <p><strong>Confidence</strong> is how clear-cut the choice is. <strong>High:</strong> one player is
+        clearly better, or the other may not play. <strong>Medium:</strong> a clear lean.
+        <strong>Low:</strong> a close call; either choice is reasonable. A player listed questionable or
+        doubtful is never rated High.</p>
+      {% endif %}
+    </details>
+  </div>
+  <div class="why-col">
+    <h2>Why</h2>
+    {% if decision.summary %}<p class="summary">{{ decision.summary|link_citations(packet.item_ids) }}</p>{% endif %}
+    <ul class="factors">
+      {% for f in decision.factors %}
+      <li>{{ f.text }}{% for id in f.evidence_ids %} <a class="cite" href="#{{ id }}">{{ id }}</a>{% endfor %}</li>
+      {% endfor %}
+    </ul>
+    {% if decision.baseline_disagreement %}
+    <p class="disagreement"><strong>Differs from the baseline ({{ names[decision.baseline_pick] }}):</strong>
+      {{ decision.baseline_disagreement|link_citations(packet.item_ids) }}</p>
     {% endif %}
-  </details>
-
-  <h2>Why</h2>
-  {% if decision.summary %}<p class="summary">{{ decision.summary|link_citations(packet.item_ids) }}</p>{% endif %}
-  <ul class="factors">
-    {% for f in decision.factors %}
-    <li>{{ f.text }}
-      {% for id in f.evidence_ids %}<a class="cite" href="#{{ id }}">{{ id }}</a>{% endfor %}
-    </li>
-    {% endfor %}
-  </ul>
-  {% if decision.baseline_disagreement %}
-  <p class="disagreement"><strong>Differs from the baseline ({{ names[decision.baseline_pick] }}):</strong>
-    {{ decision.baseline_disagreement|link_citations(packet.item_ids) }}</p>
-  {% endif %}
+  </div>
 </article>
 
 {% include "_evidence.html" %}

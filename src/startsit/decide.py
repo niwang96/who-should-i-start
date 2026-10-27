@@ -50,7 +50,7 @@ VISITOR_LIMITS = (
     VisitorLimit(6, timedelta(minutes=10), "10 minutes"),
     VisitorLimit(25, timedelta(days=1), "day"),
 )
-PROMPT_VERSION = 3  # bump when the prompt or schema changes, so cached answers aren't reused
+PROMPT_VERSION = 4  # bump when the prompt or schema changes, so cached answers aren't reused
 MAX_ATTEMPTS = 2
 # Baseline confidence from the projection gap (points): at least HIGH_MARGIN is high, MEDIUM_MARGIN medium.
 HIGH_MARGIN = 5.0
@@ -74,6 +74,8 @@ Rules:
   plain language: don't mention these rules, "the packet", "the evidence" or "the baseline"
   (call the projection the expert consensus).
 - Give 2 or 3 deciding factors. Each is one sentence and cites the evidence ids it relies on.
+- Only the numbered facts (E1, E2, ...) are citable ids; the packet's first line and player
+  headers aren't.
 - The baseline is the expert consensus projection, which is usually right. Agree with it unless
   the evidence states a definite fact the projection hasn't caught up with: a player ruled out,
   inactive, activated, released or suspended, or a clear role change. A questionable or limited
@@ -220,7 +222,11 @@ def validate(raw: Any, packet: EvidencePacket) -> tuple[Decision | None, list[st
     for f in raw_factors:
         text = str(f.get("text", "")).strip() if isinstance(f, dict) else ""
         cited = f.get("evidence_ids") if isinstance(f, dict) else None
-        ids = list(dict.fromkeys(str(i) for i in cited)) if isinstance(cited, list) else []  # deduped, in order
+        # Keep things shaped like ids (the model sometimes "cites" a header line); deduped, in order.
+        # A made-up id like E99 is kept here and rejected below.
+        ids = (
+            list(dict.fromkeys(m for i in cited for m in _CITED_ID.findall(str(i)))) if isinstance(cited, list) else []
+        )
         unknown = [i for i in ids if i not in known_ids]
         if not text or not ids:
             problems.append("every factor needs text and at least one evidence id")
@@ -239,8 +245,6 @@ def validate(raw: Any, packet: EvidencePacket) -> tuple[Decision | None, list[st
         problems.append("summary is required")
     elif len(summary) > SUMMARY_MAX_CHARS:
         problems.append(f"summary must be at most {SUMMARY_MAX_CHARS} characters")
-    elif not _CITED_ID.search(summary):
-        problems.append("summary must cite evidence ids in square brackets, like [E2]")
     unknown_ids = sorted(set(_CITED_ID.findall(summary + " " + disagreement)) - known_ids)
     if unknown_ids:
         problems.append(f"text cites ids not in the packet: {', '.join(unknown_ids)}")
