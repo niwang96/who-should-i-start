@@ -721,7 +721,7 @@ class Database:
     def scored_recommendations(self, season: int) -> list[dict[str, Any]]:
         """Every scored recommendation of the season: the evaluation joined with what was shown."""
         return self.query(
-            "SELECT e.*, r.scoring, r.pick, r.baseline_pick, r.confidence, r.source, r.visitor, r.player_ids "
+            "SELECT e.*, r.scoring, r.pick, r.baseline_pick, r.confidence, r.source, r.visitor, r.packet_json "
             "FROM evaluations e JOIN recommendations r ON r.rec_id = e.rec_id "
             "WHERE e.season = ? ORDER BY e.week, r.created_at",
             (season,),

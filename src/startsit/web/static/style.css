@@ -49,12 +49,15 @@ p { margin: 0 0 0.5rem; }
 
 /* Header: title left, week and data freshness right. */
 header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0.25rem 1.5rem; margin-bottom: 1rem; }
+.brand { display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap; }
+nav a { font-size: 0.95rem; font-weight: 600; text-decoration: none; }
+nav a:hover { text-decoration: underline; }
 .header-meta { text-align: right; }
 .week { margin: 0; }
 .freshness, .pos, .baseline, .meta, footer, .about { color: var(--muted); font-size: 0.85rem; }
 .freshness { margin: 0; }
 
-form, .answer, .evidence {
+form, .answer, .evidence, .card {
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -152,6 +155,34 @@ button {
 .cell p:target { background: var(--warn-bg); }
 .who { display: none; }
 
+/* Track record page. */
+.record h2 { font-size: 1.4rem; margin-bottom: 0.4rem; }
+.lede { max-width: 46rem; margin-bottom: 1rem; }
+.empty { color: var(--muted); }
+.card h3 { margin: 0 0 0.2rem; font-size: 1.15rem; }
+.card h4 { margin: 0 0 0.4rem; font-size: 0.95rem; }
+.card .meta { margin-bottom: 0.75rem; max-width: 46rem; }
+.muted { color: var(--muted); }
+.tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; margin-bottom: 0.75rem; }
+.tile { border: 1px solid var(--line); border-radius: 8px; padding: 0.6rem 0.8rem; display: flex; flex-direction: column; }
+.tile.ai { background: var(--accent-soft); border-color: var(--accent); }
+.tile .label { font-size: 0.8rem; color: var(--muted); font-weight: 600; }
+.tile .value { font-size: 1.8rem; font-weight: 700; line-height: 1.2; font-variant-numeric: tabular-nums; }
+.tile .detail { font-size: 0.8rem; color: var(--muted); }
+.table-wrap { overflow-x: auto; margin: 0.75rem 0; }
+table { border-collapse: collapse; font-size: 0.9rem; font-variant-numeric: tabular-nums; }
+caption { text-align: left; font-size: 0.85rem; color: var(--muted); padding-bottom: 0.3rem; }
+th, td { padding: 0.3rem 0.9rem 0.3rem 0; text-align: left; border-bottom: 1px solid var(--line); }
+thead th { font-size: 0.8rem; color: var(--muted); font-weight: 600; }
+.split { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 1rem 2rem; margin-top: 0.75rem; }
+.overrides summary { cursor: pointer; color: var(--accent); font-size: 0.9rem; }
+.overrides ul { padding-left: 0; list-style: none; margin: 0.5rem 0 0; font-size: 0.88rem; }
+.overrides li { padding: 0.3rem 0; border-bottom: 1px solid var(--line); }
+.badge { display: inline-block; min-width: 3.2rem; text-align: center; font-size: 0.72rem; font-weight: 700; border-radius: 4px; padding: 0.05rem 0.3rem; margin-right: 0.3rem; }
+.badge.hit { background: var(--accent); color: var(--accent-text); }
+.badge.miss { background: var(--error-bg); border: 1px solid var(--error-line); }
+.badge.push { border: 1px solid var(--line); }
+
 .about { margin: 0 0 1rem; }
 .about summary { cursor: pointer; color: var(--accent); }
 .about p { margin: 0.5rem 0 0; max-width: 46rem; }
@@ -178,4 +209,8 @@ footer { border-top: 1px solid var(--line); padding-top: 0.75rem; }
   .kind { padding-top: 0.75rem; border-top: 1px solid var(--line); }
   .compare > .cell { border-top: 0; padding-top: 0.25rem; }
   .who { display: block; font-weight: 600; font-size: 0.8rem; margin-bottom: 0.15rem; }
+  .tiles { grid-template-columns: 1fr; }
+  .tile { flex-direction: row; align-items: baseline; gap: 0.6rem; }
+  .tile .value { font-size: 1.3rem; }
+  .split { grid-template-columns: 1fr; }
 }

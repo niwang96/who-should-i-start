@@ -1,0 +1,132 @@
+{% extends "_layout.html" %}
+
+{% block title %}Track record — Who Should I Start?{% endblock %}
+{% block description %}How often the AI's start/sit picks beat the experts, scored against actual fantasy points every week.{% endblock %}
+{% block nav %}<a href="/">Ask a question</a>{% endblock %}
+
+{% macro pct(rate) -%}
+{% if rate.pct is not none %}{{ "%.0f"|format(rate.pct * 100) }}%{% else %}–{% endif %}
+{%- endmacro %}
+
+{% macro of(rate) -%}
+{% if rate.decided %}{{ rate.hits }} of {{ rate.decided }}{% else %}no results yet{% endif %}
+{%- endmacro %}
+
+{% block main %}
+<section class="record">
+  <h2>Track record{% if report %}, {{ report.season }} season{% endif %}</h2>
+  <p class="lede">Does the AI pick better than just following the experts? Every pick is scored after
+    the games: it's right when the player it chose outscored the other one. Each matchup is also scored
+    for the expert consensus and for the code baseline, so the three can be compared on the same
+    questions.</p>
+
+  {% set shown = groups | selectattr("key", "in", report.totals if report else {}) | list %}
+  {% if not shown %}
+  <p class="empty">Nothing scored yet. Picks are scored once the week's games are in the stats, usually by Tuesday.</p>
+  {% endif %}
+
+  {% for g in shown %}
+  {% set s = report.totals[g.key] %}
+  <article class="card" id="{{ g.key }}">
+    <h3>{{ g.title }}</h3>
+    <p class="meta">{{ g.about }}</p>
+
+    {% if s.ai.decided %}
+    <div class="tiles">
+      <div class="tile ai">
+        <span class="label">AI</span>
+        <span class="value">{{ pct(s.ai) }}</span>
+        <span class="detail">{{ of(s.ai) }}{% if s.ai.margin is not none %} · ±{{ "%.0f"|format(s.ai.margin * 100) }} pts{% endif %}</span>
+      </div>
+      <div class="tile">
+        <span class="label">Expert consensus</span>
+        <span class="value">{{ pct(s.consensus) }}</span>
+        <span class="detail">{{ of(s.consensus) }}</span>
+      </div>
+      <div class="tile">
+        <span class="label">Baseline</span>
+        <span class="value">{{ pct(s.baseline) }}</span>
+        <span class="detail">{{ of(s.baseline) }}</span>
+      </div>
+    </div>
+    {% if s.ai.decided < 100 %}
+    <p class="note">Small sample: with {{ s.ai.decided }} decided matchups, differences of a few points are
+      noise. Close matchups are near coin flips, so it takes a few hundred to tell.</p>
+    {% endif %}
+    {% else %}
+    <p class="note">The AI didn't answer any of these yet (it was busy or over its daily limit), so only
+      the experts are scored: consensus {{ pct(s.consensus_all) }} ({{ of(s.consensus_all) }}),
+      baseline {{ pct(s.baseline_all) }} ({{ of(s.baseline_all) }}).</p>
+    {% endif %}
+
+    <div class="table-wrap">
+      <table>
+        <caption>By week (on the matchups the AI answered)</caption>
+        <thead><tr><th scope="col">Week</th><th scope="col">Matchups</th><th scope="col">AI</th><th scope="col">Consensus</th><th scope="col">Baseline</th></tr></thead>
+        <tbody>
+          {% for week, w in report.weeks[g.key] | dictsort(reverse=true) %}
+          <tr>
+            <th scope="row">{{ week }}</th>
+            <td>{{ w.ai_answered }}{% if w.matchups != w.ai_answered %} <span class="muted">of {{ w.matchups }}</span>{% endif %}</td>
+            <td>{{ pct(w.ai) }}</td>
+            <td>{{ pct(w.consensus) }}</td>
+            <td>{{ pct(w.baseline) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="split">
+      <div>
+        <h4>When the AI went against the baseline</h4>
+        {% if s.overrides.decided %}
+        <p>Right {{ pct(s.overrides) }} of the time ({{ of(s.overrides) }}).</p>
+        {% else %}
+        <p class="muted">No decided overrides yet.</p>
+        {% endif %}
+        {% set overrides = report.overrides.get(g.key, []) %}
+        {% if overrides %}
+        <details class="overrides">
+          <summary>See the {{ overrides | length }} matchup{{ "s" if overrides | length != 1 }}</summary>
+          <ul>
+            {% for o in overrides[:30] %}
+            <li>
+              <span class="badge {{ 'hit' if o.hit == 1 else 'miss' if o.hit == 0 else 'push' }}">{{ "Right" if o.hit == 1 else "Wrong" if o.hit == 0 else "Tie" }}</span>
+              Week {{ o.week }}, {{ scoring_labels[o.scoring] }}: AI started <strong>{{ o.ai_pick }}</strong>
+              <span class="muted">({{ "%.1f"|format(o.ai_points) }})</span> over {{ o.baseline_pick }}
+              <span class="muted">({{ "%.1f"|format(o.baseline_points) }})</span>
+            </li>
+            {% endfor %}
+          </ul>
+        </details>
+        {% endif %}
+      </div>
+      <div>
+        <h4>Does confidence mean anything?</h4>
+        <table class="compact">
+          <tbody>
+            {% for c in confidences %}
+            <tr><th scope="row">{{ c | capitalize }}</th><td>{{ pct(s.by_confidence[c]) }}</td><td class="muted">{{ of(s.by_confidence[c]) }}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </article>
+  {% endfor %}
+
+  <details class="about">
+    <summary>How it's scored</summary>
+    <p>Actual points come from the nflverse weekly stats in the question's scoring format. A player who
+      didn't play scores 0. A tie counts for neither side.</p>
+    <p><strong>AI:</strong> the pick shown on this site. <strong>Expert consensus:</strong> the
+      FantasyPros consensus on the day asked (the better rank at a position, else the higher projection).
+      <strong>Baseline:</strong> the code's pick from the consensus projection, adjusted for injuries,
+      byes and your scoring format. The three are compared only on matchups the AI answered.</p>
+    <p>The ± is a 95% margin of error. The benchmark matchups are deliberately close calls (players the
+      experts rank side by side), so all three methods are expected to land near 50%. Even a few points
+      above that is a real edge.</p>
+  </details>
+</section>
+{% endblock %}

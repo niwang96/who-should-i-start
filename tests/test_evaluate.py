@@ -32,7 +32,9 @@ def rec(rec_id, players, pick, baseline_pick=None, scoring="ppr", source="llm", 
         model="m",
         decision_json="{}",
         packet_text="",
-        packet_json=json.dumps({"players": [{"player_id": p, "team": t} for p, t in players.items()]}),
+        packet_json=json.dumps(
+            {"players": [{"player_id": p, "name": f"Player {p}", "team": t} for p, t in players.items()]}
+        ),
         visitor="v1",
     )
     return row | kw
@@ -161,6 +163,9 @@ def test_report_compares_the_picks_on_the_matchups_the_ai_answered(week):
     assert report.weeks["users"][7].matchups == 3
     assert str(report.totals["benchmark"].ai) == "1/1 (100%)"
     assert str(report.totals["backfill"].ai) == "0/1 (0%)"
+    [override] = report.overrides["users"]
+    assert override == evaluate.Override(7, "ppr", "Player A", 20.0, "Player B", 12.0, 1)
+    assert "benchmark" not in report.overrides  # it agreed with the baseline
 
     text = evaluate.report_text(report)
     assert "users:\n    week 7: 2 AI-answered | AI 1/2 (50%) | baseline 0/2 (0%)" in text
@@ -189,3 +194,8 @@ def test_cli_scores_and_prints_the_report(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert out.startswith("Scored 1 new recommendations.\nSeason 2026 track record")
     assert "AI 1/1 (100%)" in out
+
+
+def test_margin_of_error():
+    assert evaluate.Rate(hits=50, decided=100).margin == pytest.approx(0.098, abs=0.001)
+    assert evaluate.Rate().margin is None

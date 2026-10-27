@@ -3,8 +3,8 @@ Fantasy Football helper for deciding which player to start.
 
 ## Status
 Build step 6 of 6 (see `CLAUDE.md`): ingest and usage features, consensus rankings, baseline and
-evidence packet, news extraction, the AI decision, the web app, and the weekly evaluation (6a).
-Next: the public track record page, then Reddit as a crowd signal (6b).
+evidence packet, news extraction, the AI decision, the web app, and the weekly evaluation with a
+public track record page (6a). Next: Reddit as a crowd signal (6b).
 
 ## Setup
 ```bash
@@ -131,6 +131,7 @@ quota error counts as the daily limit, anything else as the per-minute one.
 ```bash
 python -m startsit.evaluate     # score what's finished, then print the season's hit rates
 ```
+The same report is public on the web app's `/record` page.
 Every logged recommendation is scored once all its players' games are in the nflverse stats
 (a player with no stats scores 0 once his team's game is in; until then it waits). A pick hits
 when the chosen player outscored the other in the question's format; a tie counts for neither

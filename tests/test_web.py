@@ -3,9 +3,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
+from test_cli import _week as cli_week
 from test_cli import seed
 
 from startsit import decide as decide_module
+from startsit import evaluate
 from startsit.db import Database
 from startsit.llm import BudgetedLLM, FakeProvider, VisitorLimit
 from startsit.web import app as web
@@ -190,3 +192,37 @@ def test_scoring_is_a_toggle_of_real_radio_buttons(path):
     assert r.text.count('type="radio" name="scoring"') == 3 and 'class="segmented"' in r.text
     assert 'value="ppr" checked' in r.text  # PPR is the default
     assert "Same name on two teams" not in r.text  # the ambiguity error explains it when it happens
+
+
+def test_track_record_page(path, monkeypatch):
+    from test_evaluate import rec
+
+    client = client_for(path)
+    r = client.get("/record")
+    assert r.status_code == 200 and "Nothing scored yet" in r.text
+    assert '<a href="/">Ask a question</a>' in r.text and '<a href="/record">Track record</a>' in client.get("/").text
+
+    with Database(path) as db:
+        db.upsert("player_weeks", [_week("A", 7, 20.0), _week("B", 7, 12.0, team="DAL")])
+        ab = {"A": "PHI", "B": "DAL"}
+        db.upsert(
+            "recommendations",
+            [
+                rec("u1", ab, pick="A", baseline_pick="B", confidence="high"),
+                rec("b1", ab, pick="B", visitor="benchmark"),
+                rec("f1", ab, pick="A", source="baseline", visitor="benchmark-backfill"),
+            ],
+        )
+        evaluate.score_pending(db)
+    r = client_for(path).get("/record")  # a new app: the page is cached for an hour per process
+    page = r.text
+    assert page.index('id="benchmark"') < page.index('id="backfill"') < page.index('id="users"')
+    assert "Small sample: with 1 decided matchups" in page
+    assert "AI started <strong>Player A</strong>" in page and "(20.0)</span> over Player B" in page
+    assert "Right 100% of the time (1 of 1)" in page  # the users' override
+    assert "The AI didn't answer any of these yet" in page  # the backfill had only baseline picks
+    assert client.get("/record").text.count("Nothing scored yet") == 1  # the first app still serves its cache
+
+
+def _week(player_id, week, fp_ppr, team="PHI"):
+    return cli_week(player_id, week) | dict(team=team, fp_ppr=fp_ppr, fp_half=fp_ppr, fp_std=fp_ppr)
