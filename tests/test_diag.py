@@ -1,6 +1,3 @@
-import io
-import json
-import urllib.error
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -13,52 +10,6 @@ from startsit.web import app as web
 from startsit.web import diag
 
 NOW = datetime(2026, 10, 24, 18, 0, tzinfo=UTC)
-
-
-def listing(*titles):
-    children = [
-        {"data": {"title": t, "permalink": f"/r/fantasyfootball/comments/{i}/x/"}} for i, t in enumerate(titles)
-    ]
-    return json.dumps({"data": {"children": children}}).encode()
-
-
-@pytest.fixture(autouse=True)
-def no_sleep(monkeypatch):
-    monkeypatch.setattr(diag.time, "sleep", lambda s: None)
-
-
-def test_reddit_report_summarizes_each_probe_and_reads_a_thread():
-    def fetch(url):
-        if "/comments/" in url:
-            return json.dumps([json.loads(listing("Post")), {"data": {"children": [{}, {}]}}]).encode()
-        return listing("WDIS Week 8", "Injury thread")
-
-    report = diag.reddit_report(fetch)
-    assert report["ok"] is True and len(report["probes"]) == 4
-    assert report["probes"][0] | {"ms": 0} == {
-        "url": diag.REDDIT_PROBES[0],
-        "status": 200,
-        "bytes": len(listing("WDIS Week 8", "Injury thread")),
-        "posts": 2,
-        "first_title": "WDIS Week 8",
-        "permalink": "/r/fantasyfootball/comments/0/x/",
-        "ms": 0,
-    }
-    assert report["probes"][3]["url"] == "https://www.reddit.com/r/fantasyfootball/comments/0/x.json?limit=10"
-    assert report["probes"][3]["comments"] == 2
-
-
-def test_reddit_report_reports_blocks_and_garbage_without_raising():
-    def fetch(url):
-        if "old." in url:
-            return b"<html>not json"
-        raise urllib.error.HTTPError(url, 403, "Blocked", {}, io.BytesIO(b"whoa there, pardner"))  # type: ignore[arg-type]
-
-    report = diag.reddit_report(fetch)
-    assert report["ok"] is False and len(report["probes"]) == 3  # no permalink, so no thread probe
-    blocked, _, garbage = report["probes"]
-    assert (blocked["status"], blocked["error"], blocked["body_start"]) == (403, "Blocked", "whoa there, pardner")
-    assert garbage["error"].startswith("JSONDecodeError")
 
 
 @pytest.mark.parametrize(
@@ -89,11 +40,9 @@ def test_diagnostics_only_on_preview_deployments(tmp_path, monkeypatch):
     monkeypatch.delenv("VERCEL_ENV", raising=False)
     assert TestClient(web.create_app(path)).get("/diag/limits").status_code == 404
     monkeypatch.setenv("VERCEL_ENV", "production")
-    assert TestClient(web.create_app(path)).get("/diag/reddit").status_code == 404
+    assert TestClient(web.create_app(path)).get("/diag/limits").status_code == 404
 
     monkeypatch.setenv("VERCEL_ENV", "preview")
-    monkeypatch.setattr(diag, "get_bytes", lambda url: listing())
     client = TestClient(web.create_app(path, clock=lambda: NOW))
-    assert client.get("/diag/reddit").json()["probes"][0]["posts"] == 0
     r = client.get("/diag/limits", headers={"x-forwarded-for": "198.51.100.4"})
     assert r.json()["address"] == "198.51.x.x" and r.json()["visitor"] == visitor_id("198.51.100.4")

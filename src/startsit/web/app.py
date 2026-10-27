@@ -117,7 +117,7 @@ def create_app(
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     diagnostics: bool | None = None,
 ) -> FastAPI:
-    """The app. `diagnostics` adds /diag/* pages; by default only on Vercel preview deployments."""
+    """The app. `diagnostics` adds /diag/limits; by default only on Vercel preview deployments."""
     if diagnostics is None:
         diagnostics = os.environ.get("VERCEL_ENV") == "preview"
     app = FastAPI(title="Who Should I Start?", docs_url=None, redoc_url=None, openapi_url=None)
@@ -228,10 +228,6 @@ def create_app(
         return JSONResponse({"ok": True, "time": datetime.now(UTC).isoformat(timespec="seconds")})
 
     if diagnostics:
-
-        @app.get("/diag/reddit")
-        def diag_reddit() -> JSONResponse:
-            return JSONResponse(diag.reddit_report())
 
         @app.get("/diag/limits")
         def diag_limits(request: Request, db: DB) -> JSONResponse:

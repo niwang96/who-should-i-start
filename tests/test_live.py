@@ -9,14 +9,17 @@ Quota per run, kept as small as possible:
   `LIVE_GEMINI_BUDGET` enforces the ceiling. Gemini's free tier allows 500/day.
 - FantasyPros: 1 call (one batch of projections). The free key allows ~75/day; the daily
   ingest uses ~26.
-- Everything else (feeds, the rankings file, nflverse) is free; each is fetched once.
+- Everything else (feeds, the rankings file, nflverse, Reddit) is free; each is fetched once.
 
 Each test skips when its key isn't set, so forks and local runs without keys still pass.
 """
 
 from __future__ import annotations
 
+import json
 import os
+import time
+import urllib.error
 from datetime import UTC, datetime
 from functools import cache
 
@@ -27,6 +30,7 @@ from startsit.baseline import BaselineScore
 from startsit.db import Database
 from startsit.decide import decide
 from startsit.evidence import EvidenceItem, EvidencePacket, PlayerEvidence, Question
+from startsit.http import get_bytes
 from startsit.ingest import news, news_extract, nflverse, projections, rankings
 from startsit.llm import BudgetedLLM, GeminiProvider
 
@@ -167,3 +171,22 @@ def test_nflverse_season_builds_every_table():
         nflverse.build_games(raw),
     ):
         assert not frame.is_empty()
+
+
+def reddit_json(url: str):
+    try:
+        return json.loads(get_bytes(url))
+    except urllib.error.HTTPError as e:
+        body = e.read()[:200].decode("utf-8", "replace")
+        pytest.fail(f"Reddit blocked this runner: {url} -> {e.code} {e.reason}: {body}")
+
+
+def test_reddit_json_is_readable_from_this_runner():
+    # Step 6 would read r/fantasyfootball from the ingest jobs, which run here on GitHub Actions.
+    # Reddit often treats datacenter IPs differently from a laptop, so this checks the real path.
+    listing = reddit_json("https://www.reddit.com/r/fantasyfootball/new.json?limit=5")
+    posts = [child["data"] for child in listing["data"]["children"]]
+    assert posts, "Reddit answered with an empty listing"
+    time.sleep(2)  # be polite
+    thread = reddit_json(f"https://www.reddit.com{posts[0]['permalink'].rstrip('/')}.json?limit=10")
+    assert thread[0]["data"]["children"][0]["data"]["title"] == posts[0]["title"]
