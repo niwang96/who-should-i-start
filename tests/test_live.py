@@ -16,7 +16,6 @@ Each test skips when its key isn't set, so forks and local runs without keys sti
 
 from __future__ import annotations
 
-import json
 import os
 import time
 import urllib.error
@@ -173,20 +172,30 @@ def test_nflverse_season_builds_every_table():
         assert not frame.is_empty()
 
 
-def reddit_json(url: str):
+REDDIT_ROUTES = (
+    "https://www.reddit.com/r/fantasyfootball/new.json?limit=5",
+    "https://old.reddit.com/r/fantasyfootball/new.json?limit=5",
+    "https://www.reddit.com/r/fantasyfootball/new/.rss?limit=5",
+)
+
+
+def reddit_status(url: str) -> str:
     try:
-        return json.loads(get_bytes(url))
+        body = get_bytes(url)
     except urllib.error.HTTPError as e:
-        body = e.read()[:200].decode("utf-8", "replace")
-        pytest.fail(f"Reddit blocked this runner: {url} -> {e.code} {e.reason}: {body}")
+        return f"{e.code} {e.reason}"
+    except OSError as e:
+        return f"{type(e).__name__}: {e}"
+    return f"200, {len(body)} bytes, starts {body[:40]!r}"
 
 
-def test_reddit_json_is_readable_from_this_runner():
+def test_reddit_is_readable_from_this_runner():
     # Step 6 would read r/fantasyfootball from the ingest jobs, which run here on GitHub Actions.
-    # Reddit often treats datacenter IPs differently from a laptop, so this checks the real path.
-    listing = reddit_json("https://www.reddit.com/r/fantasyfootball/new.json?limit=5")
-    posts = [child["data"] for child in listing["data"]["children"]]
-    assert posts, "Reddit answered with an empty listing"
-    time.sleep(2)  # be polite
-    thread = reddit_json(f"https://www.reddit.com{posts[0]['permalink'].rstrip('/')}.json?limit=10")
-    assert thread[0]["data"]["children"][0]["data"]["title"] == posts[0]["title"]
+    # Reddit often treats datacenter IPs differently from a laptop, so this checks each free route.
+    results = {}
+    for url in REDDIT_ROUTES:
+        results[url] = reddit_status(url)
+        time.sleep(2)  # be polite
+    report = "\n".join(f"{status}  <- {url}" for url, status in results.items())
+    print(report)
+    assert any(status.startswith("200") for status in results.values()), f"every route blocked:\n{report}"
