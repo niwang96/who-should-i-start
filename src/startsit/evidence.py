@@ -508,6 +508,7 @@ def packet_for_names(
     season: int | None = None,
     week: int | None = None,
     matcher: PlayerMatcher | None = None,
+    as_of: datetime | None = None,
 ) -> EvidencePacket:
     """Resolve player names (optionally "Name (TEAM)") and default season/week, then build the packet."""
     season = season or db.latest_season()
@@ -516,4 +517,4 @@ def packet_for_names(
     week = week or current_week(db, season)
     matcher = matcher or PlayerMatcher(db.all_players())
     ids = [find_player(db, *parse_player_arg(name), matcher=matcher)["player_id"] for name in names]
-    return build_packet(db, ids, scoring, season, week)
+    return build_packet(db, ids, scoring, season, week, as_of)

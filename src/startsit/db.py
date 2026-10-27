@@ -658,6 +658,14 @@ class Database:
             self._scalar("SELECT max(scrape_date) AS d FROM rankings WHERE season = ? AND week = ?", (season, week)),
         )
 
+    def week_gamedays(self, season: int, week: int) -> tuple[str, str] | None:
+        """The week's first and last game days (YYYY-MM-DD, US Eastern), e.g. Thursday and Monday."""
+        row = self._one(
+            "SELECT min(gameday) AS first, max(gameday) AS last FROM games WHERE season = ? AND week = ?",
+            (season, week),
+        )
+        return (row["first"], row["last"]) if row and row["first"] else None
+
     def latest_news_fetch(self) -> str | None:
         """When news feeds were last fetched (ISO 8601, UTC)."""
         return cast("str | None", self._scalar("SELECT max(fetched_at) AS t FROM news_items"))

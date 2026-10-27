@@ -1,5 +1,20 @@
 {% if error %}
 <div class="error" role="alert">{{ error }}</div>
+{% elif locked %}
+<article class="answer">
+  <p class="verdict">No pick needed</p>
+  {% for p in locked %}
+  <p class="warning">{{ p.name }}'s game already kicked off ({{ p.kickoff|eastern }}).</p>
+  {% endfor %}
+  <p>Once a player's game starts, most leagues lock him: he stays in your lineup if he's in it, and
+    can't be moved in if he's on your bench, so there's no choice left to make for this pair. The AI
+    wasn't asked. The evidence is below for reference.</p>
+  {% if info and info.gamedays %}
+  <p class="meta">Week {{ info.week }} runs through {{ info.gamedays[1]|game_day }}. Answers for week
+    {{ info.week + 1 }} start when its rankings arrive, usually on Tuesday.</p>
+  {% endif %}
+</article>
+{% include "_evidence.html" %}
 {% else %}
 {% set pick = packet.player(decision.pick) %}
 <article class="answer">
@@ -11,7 +26,27 @@
   </p>
   {% if decision.note %}<p class="note">{{ decision.note }}</p>{% endif %}
 
+  <details class="explain">
+    <summary>What do the confidence and "{{ source_labels[decision.source] }}" mean?</summary>
+    {% if decision.source == "baseline" %}
+    <p><strong>Baseline pick:</strong> the AI wasn't used (the note above says why), so this is the
+      expert-consensus pick: the higher FantasyPros projection in your scoring format.</p>
+    <p><strong>Confidence</strong> comes from the gap between the two projections:
+      <strong>High</strong> {{ "%g"|format(high_margin) }}+ points,
+      <strong>Medium</strong> {{ "%g"|format(medium_margin) }} to {{ "%g"|format(high_margin) }} points,
+      <strong>Low</strong> under {{ "%g"|format(medium_margin) }} points (a close call).</p>
+    {% else %}
+    <p><strong>AI pick:</strong> an AI weighed only the evidence listed below, starting from the expert
+      consensus, and every reason was checked against that evidence before you saw it.</p>
+    <p><strong>Confidence</strong> is how clear-cut the choice is. <strong>High:</strong> one player is
+      clearly better, or the other may not play. <strong>Medium:</strong> a clear lean.
+      <strong>Low:</strong> a close call; either choice is reasonable. A player listed questionable or
+      doubtful is never rated High.</p>
+    {% endif %}
+  </details>
+
   <h2>Why</h2>
+  {% if decision.summary %}<p class="summary">{{ decision.summary|link_citations(packet.item_ids) }}</p>{% endif %}
   <ul class="factors">
     {% for f in decision.factors %}
     <li>{{ f.text }}
@@ -21,27 +56,9 @@
   </ul>
   {% if decision.baseline_disagreement %}
   <p class="disagreement"><strong>Differs from the baseline ({{ names[decision.baseline_pick] }}):</strong>
-    {{ decision.baseline_disagreement }}</p>
+    {{ decision.baseline_disagreement|link_citations(packet.item_ids) }}</p>
   {% endif %}
-
-  {% for p in packet.players if p.game_started %}
-  <p class="warning">{{ p.name }}'s game already kicked off ({{ p.kickoff|eastern }}). Most leagues have locked that spot.</p>
-  {% endfor %}
 </article>
 
-<section class="evidence">
-  <h2>The evidence</h2>
-  {% for p in packet.players %}
-  <div class="player{% if p.player_id == decision.pick %} picked{% endif %}">
-    <h3>{{ p.name }} <span class="pos">{{ p.position }}, {{ p.team or "free agent" }}</span></h3>
-    <p class="baseline">Baseline {{ "%.1f"|format(p.score.points) }} pts{% if p.score.note %} ({{ p.score.note }}){% endif %}</p>
-    <ul>
-      {% for item in p.items %}
-      <li id="{{ item.id }}"><span class="id">{{ item.id }}</span> <span class="kind">{{ kind_labels[item.kind] }}</span>
-        {{ item.text }}{% if item.source_url %} <a href="{{ item.source_url }}" rel="noopener nofollow" target="_blank">source</a>{% endif %}</li>
-      {% endfor %}
-    </ul>
-  </div>
-  {% endfor %}
-</section>
+{% include "_evidence.html" %}
 {% endif %}

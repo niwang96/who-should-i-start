@@ -36,12 +36,21 @@ def make_packet(margin=6.4, a_points=13.1, b_points=19.5):
     return EvidencePacket(q, [a, b], pick, margin)
 
 
-def answer(pick="P2", confidence="high", factors=None, disagreement=""):
+SUMMARY = "Nacua is the consensus WR1 [E3] and projects 24.5 PPR points [E4], while Smith is ruled out [E2]."
+
+
+def answer(pick="P2", confidence="high", factors=None, disagreement="", summary=SUMMARY):
     factors = factors or [
         {"text": "Smith is ruled out.", "evidence_ids": ["E2"]},
         {"text": "Nacua is the consensus WR1.", "evidence_ids": ["E3", "E4"]},
     ]
-    return {"pick": pick, "confidence": confidence, "factors": factors, "baseline_disagreement": disagreement}
+    return {
+        "pick": pick,
+        "confidence": confidence,
+        "summary": summary,
+        "factors": factors,
+        "baseline_disagreement": disagreement,
+    }
 
 
 def budgeted(db, provider, budget=10):
@@ -62,6 +71,7 @@ def test_validate_accepts_a_grounded_answer():
         confidence="high",
         factors=[Factor("Smith is ruled out.", ["E2"]), Factor("Nacua is the consensus WR1.", ["E3", "E4"])],
         baseline_pick="NACUA",
+        summary=SUMMARY,
     )
     assert decision.agrees_with_baseline
 
@@ -77,6 +87,16 @@ def test_validate_accepts_a_grounded_answer():
         (answer(factors=[{"text": "Only one.", "evidence_ids": ["E1"]}]), "give 2 or 3 factors"),
         (answer(factors=[{"text": "A string, not a list.", "evidence_ids": "E1"}] * 2), "at least one evidence id"),
         (answer(pick="P1"), "baseline_disagreement must explain why"),
+        (answer(summary=" "), "summary is required"),
+        (answer(summary="x" * 901), "at most 900 characters"),
+        (answer(summary="Nacua is better."), "summary must cite evidence ids"),
+        (answer(summary="Start Puka Smith [E3]."), "these player names are mixed up: Puka Smith"),
+        (answer(summary="Smith is out [E9]."), "text cites ids not in the packet: E9"),
+        (answer(summary="Nacua projects 31.2 points."), "these numbers aren't in the evidence: 31.2"),
+        (
+            answer(factors=[{"text": "Nacua had 140 yards.", "evidence_ids": ["E3"]}] * 2),
+            "these numbers aren't in the evidence: 140",
+        ),
         ("not json", "not a JSON object"),
     ],
 )
@@ -84,6 +104,24 @@ def test_validate_rejects(raw, problem):
     decision, problems = validate(raw, make_packet())
     assert decision is None
     assert any(problem in p for p in problems)
+
+
+def test_swapped_names_allow_players_who_share_a_last_name():
+    from startsit.decide import swapped_names
+
+    names = ["Amon-Ra St. Brown", "Equanimeous St. Brown"]
+    assert swapped_names("Start Amon-Ra St. Brown over Equanimeous St. Brown.", names) == []
+    assert swapped_names("Tyler Kelce edges Travis Higbee.", ["Travis Kelce", "Tyler Higbee"]) == [
+        "Travis Higbee",
+        "Tyler Kelce",
+    ]
+
+
+def test_numbers_may_come_from_the_packet_rounded_or_as_a_difference():
+    # 24.5 is in the packet; 24 is it rounded; 6.4 is 19.5 - 13.1 (both baseline scores); 3 is a small count.
+    summary = "Nacua projects 24.5 (about 24) points [E4], 6.4 more than Smith, over his last 3 games."
+    decision, problems = validate(answer(summary=summary), make_packet())
+    assert problems == [] and decision.summary == summary
 
 
 def test_a_disagreement_is_kept_only_when_the_pick_differs():

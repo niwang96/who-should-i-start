@@ -12,21 +12,23 @@ Run locally: uvicorn startsit.web.app:app --reload  (uses $DATABASE_URL or the S
 # No `from __future__ import annotations` here: FastAPI reads the endpoint annotations at
 # runtime, including the `DB` alias defined inside create_app.
 import logging
+import re
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Annotated, Any, cast
 
-from fastapi import Depends, FastAPI, Form, Query, Request
+from fastapi import Depends, FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from markupsafe import Markup, escape
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
 from startsit.db import Database
-from startsit.decide import Decision, decide, decide_llm, record_recommendation
+from startsit.decide import HIGH_MARGIN, MEDIUM_MARGIN, Decision, decide, decide_llm, record_recommendation
 from startsit.evidence import EvidencePacket, PlayerLookupError, current_week, eastern_time, packet_for_names
 from startsit.llm import BudgetedLLM, visitor_id
 from startsit.names import PlayerMatcher
@@ -35,9 +37,8 @@ from startsit.scoring import LABELS, SCORINGS, Scoring
 log = logging.getLogger("startsit.web")
 
 HERE = Path(__file__).parent
-MAX_PLAYERS = 4
+MAX_PLAYERS = 2  # the page compares two players (the engine takes more)
 MAX_NAME_LENGTH = 60
-SUGGESTIONS = 8
 PLAYER_CACHE_SECONDS = 3600  # the players table changes once a day, with the ingest
 
 SOURCE_LABELS = {"llm": "AI pick", "cache": "AI pick", "baseline": "Baseline pick"}
@@ -76,6 +77,26 @@ class WeekInfo:
     rankings_as_of: str | None
     news_as_of: str | None
     stats_as_of: str | None
+    gamedays: tuple[str, str] | None = None  # the week's first and last game days
+
+
+def game_day(day: str) -> str:
+    """'2026-10-22' -> 'Thu Oct 22'."""
+    d = date.fromisoformat(day)
+    return f"{d:%a %b} {d.day}"
+
+
+_CITATION = re.compile(r"\[?\b(E\d+)\b\]?")
+
+
+def link_citations(text: str, known_ids: set[str]) -> Markup:
+    """Escape `text` and turn evidence ids like [E2] into links to that item on the page."""
+
+    def link(m: re.Match[str]) -> str:
+        item = m.group(1)
+        return f'<a class="cite" href="#{item}">{item}</a>' if item in known_ids else m.group(0)
+
+    return Markup(_CITATION.sub(link, str(escape(text))))
 
 
 def client_address(request: Request) -> str:
@@ -91,15 +112,23 @@ def clean_names(players: list[str]) -> list[str]:
 def create_app(
     db_target: str | None = None,
     llm_factory: Callable[[Database, str | None], BudgetedLLM | None] = decide_llm,
+    clock: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> FastAPI:
     app = FastAPI(title="Who Should I Start?", docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(SecurityHeaders)
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
     templates = Jinja2Templates(directory=HERE / "templates")
     templates.env.globals.update(
-        scorings=SCORINGS, scoring_labels=LABELS, source_labels=SOURCE_LABELS, kind_labels=KIND_LABELS
+        scorings=SCORINGS,
+        scoring_labels=LABELS,
+        source_labels=SOURCE_LABELS,
+        kind_labels=KIND_LABELS,
+        high_margin=HIGH_MARGIN,
+        medium_margin=MEDIUM_MARGIN,
     )
     templates.env.filters["eastern"] = eastern_time
+    templates.env.filters["link_citations"] = link_citations
+    templates.env.filters["game_day"] = game_day
 
     setup_done = False  # create missing tables once per process, not on every request
     matcher_cache: dict[str, Any] = {}
@@ -126,14 +155,23 @@ def create_app(
             return None
         week = current_week(db, season)
         return WeekInfo(
-            season, week, db.latest_scrape_date(season, week), db.latest_news_fetch(), db.latest_stats_run()
+            season,
+            week,
+            db.latest_scrape_date(season, week),
+            db.latest_news_fetch(),
+            db.latest_stats_run(),
+            db.week_gamedays(season, week),
         )
 
     def page(request: Request, db: Database, **context: Any) -> HTMLResponse:
         context.setdefault("players", ["", ""])
         context.setdefault("scoring", "ppr")
+        # The whole player list ships with the page (~1,000 names), so the browser suggests names
+        # as you type without asking the server; nothing is requested until the button is pressed.
         return templates.TemplateResponse(
-            request, "index.html", {"info": week_info(db), "max_players": MAX_PLAYERS, **context}
+            request,
+            "index.html",
+            {"info": week_info(db), "max_players": MAX_PLAYERS, "rows": matcher(db).players, **context},
         )
 
     @app.get("/", response_class=HTMLResponse)
@@ -165,18 +203,19 @@ def create_app(
         info = week_info(db)
         if info is None:
             raise ValueError("No data yet. Please try again later.")
-        packet: EvidencePacket = packet_for_names(db, names, scoring, info.season, info.week, matcher(db))
+        packet: EvidencePacket = packet_for_names(
+            db, names, scoring, info.season, info.week, matcher(db), as_of=clock()
+        )
+        if started := [p for p in packet.players if p.game_started]:
+            # A player whose game has kicked off is locked in or out of the lineup in most leagues, so
+            # there's no choice left: no AI call, and nothing logged for the evaluation.
+            return {"packet": packet, "locked": started, "names": packet.names, "info": info}
         decision: Decision = decide(db, packet, llm_factory(db, visitor))
         try:
             record_recommendation(db, packet, decision, visitor)
         except Exception:  # logging must never cost the user their answer
             log.exception("recording the recommendation failed")
         return {"packet": packet, "decision": decision, "names": packet.names}
-
-    @app.get("/players", response_class=HTMLResponse)
-    def suggest(request: Request, db: DB, q: Annotated[str, Query(alias="players")] = "") -> HTMLResponse:
-        rows = matcher(db).candidates(q[:MAX_NAME_LENGTH])[:SUGGESTIONS] if len(q.strip()) >= 2 else []
-        return templates.TemplateResponse(request, "_options.html", {"rows": rows})
 
     @app.get("/healthz")
     def health() -> JSONResponse:

@@ -32,9 +32,10 @@ FastAPI with Jinja templates and htmx (`src/startsit/web/`). htmx is vendored as
 in `static/`, so pages load nothing from other sites and the content-security policy allows only
 the app's own origin. Every page works without JavaScript; with it, htmx swaps in just the
 result. The page says which week it answers for and how fresh the data is, suggests players as
-you type (`/players`), shows the pick, confidence, deciding factors with links to the numbered
-evidence, every evidence item with its source link, and a warning when a player's game has
-already kicked off. Every answer is logged to `recommendations` with the full packet (text and
+you type (the full player list ships with the page, so typing sends no requests, and only the
+button submits; Enter doesn't), shows the pick, confidence (with an explainer), a short summary and deciding factors with links
+to the numbered evidence, every evidence item with its source link, and, when either player's game has
+already kicked off, "No pick needed" instead of an AI call (the spot is locked in most leagues). Every answer is logged to `recommendations` with the full packet (text and
 structure) for the weekly evaluation; visitors are recorded only as a salted hash.
 
 Deployed on Vercel (free Hobby plan): `api/index.py` exposes the app, which Vercel's FastAPI

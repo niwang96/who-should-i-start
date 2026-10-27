@@ -1,5 +1,5 @@
 import json
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -17,6 +17,7 @@ ANSWER = {
         {"text": "Alpha Back projects higher.", "evidence_ids": ["E2"]},
         {"text": "His team is favored.", "evidence_ids": ["E3"]},
     ],
+    "summary": "Alpha Back projects higher [E2] and his team is favored [E3].",
     "baseline_disagreement": "",
 }
 
@@ -32,7 +33,8 @@ def client_for(path, provider=None, limits=()):
             return None
         return BudgetedLLM(provider, db, "decide", 10, visitor=visitor, visitor_limits=limits)
 
-    return TestClient(web.create_app(path, llm_factory))
+    # Saturday before the week-7 Sunday games in the seeded schedule.
+    return TestClient(web.create_app(path, llm_factory, clock=lambda: datetime(2026, 10, 24, 18, 0, tzinfo=UTC)))
 
 
 def ask(client, *players, scoring="half", hx=False, ip="203.0.113.7"):
@@ -45,7 +47,7 @@ def test_home_page_shows_the_week_and_data_freshness(path):
         db.record_run("nflverse:player_weeks", 2026, 7, 1)
     r = client_for(path).get("/")
     assert r.status_code == 200
-    assert "Answering for <strong>Week 7, 2026</strong>" in r.text
+    assert "Answering for <strong>Week 7, 2026</strong> · games Sun Oct 25 \N{EN DASH} Sun Oct 25" in r.text
     assert "Rankings as of 2026-10-24" in r.text and "News checked never" in r.text and "Stats updated 20" in r.text
     assert "FantasyPros" in r.text  # attribution
     assert r.headers["content-security-policy"].startswith("default-src 'self'")
@@ -58,6 +60,9 @@ def test_ask_returns_the_ai_pick_with_cited_evidence_and_logs_it(path):
     assert "Start <strong>Alpha Back</strong>" in r.text
     assert "Medium confidence" in r.text and "AI pick" in r.text
     assert 'href="#E2"' in r.text and 'id="E2"' in r.text
+    # The summary's [E2]-style citations become links; the explainer matches an AI pick.
+    assert 'Alpha Back projects higher <a class="cite" href="#E2">E2</a>' in r.text
+    assert "a clear lean" in r.text and "doubtful is never rated High" in r.text
     assert 'value="Alpha Back"' in r.text  # the form keeps what was asked
     with Database(path) as db:
         [row] = db.query("select * from recommendations")
@@ -73,6 +78,7 @@ def test_htmx_requests_get_only_the_result_fragment(path):
     assert "<html" not in r.text
     assert "Start <strong>Alpha Back</strong>" in r.text and "Baseline pick" in r.text
     assert "AI unavailable; showing the baseline pick." in r.text
+    assert "High</strong> 5+ points" in r.text  # the baseline explainer gives the projection-gap rule
 
 
 @pytest.mark.parametrize(
@@ -88,11 +94,15 @@ def test_bad_questions_show_a_message(path, players, message):
     assert r.status_code == 200 and message in r.text and 'role="alert"' in r.text
 
 
-def test_suggestions_offer_name_and_team(path):
+def test_the_page_ships_every_player_for_suggestions_and_only_the_button_submits(path):
     client = client_for(path)
-    r = client.get("/players", params={"players": "alp"})
+    r = client.get("/")
     assert '<option value="Alpha Back (PHI)">RB, PHI</option>' in r.text
-    assert client.get("/players", params={"players": "a"}).text.strip() == ""  # too short to search
+    assert '<option value="Bravo Back (DAL)">RB, DAL</option>' in r.text
+    assert "hx-get" not in r.text  # nothing is fetched while typing
+    assert "/static/app.js" in r.text
+    assert "event.preventDefault()" in client.get("/static/app.js").text  # Enter doesn't submit
+    assert client.get("/players", params={"players": "alp"}).status_code == 404  # no search endpoint
 
 
 def test_a_suggested_value_resolves(path):
@@ -110,11 +120,16 @@ def test_each_visitor_has_their_own_ai_allowance(path):
     assert "AI pick" in other
 
 
-def test_a_game_already_under_way_is_flagged(path):
+def test_no_ai_call_once_a_game_has_kicked_off(path):
     with Database(path) as db:
         db.execute("UPDATE games SET gameday = '2026-10-22', gametime = '20:15'")
-    r = ask(client_for(path), "Alpha Back", "Bravo Back", hx=True)
-    assert "game already kicked off (Thu 8:15 PM ET)" in r.text
+    provider = FakeProvider()  # has no answers: any call would fail
+    r = ask(client_for(path, provider), "Alpha Back", "Bravo Back", hx=True)
+    assert "No pick needed" in r.text and "Alpha Back's game already kicked off (Thu 8:15 PM ET)" in r.text
+    assert "Week 7 runs through Thu Oct 22" in r.text and 'id="E1"' in r.text  # evidence still shown
+    assert provider.prompts == []
+    with Database(path) as db:
+        assert db.query("select count(*) as n from recommendations")[0]["n"] == 0
 
 
 def test_a_failed_log_write_still_shows_the_answer(path, monkeypatch):
@@ -143,3 +158,19 @@ def test_record_recommendation_on_both_backends(db):
     rec_id = decide_module.record_recommendation(db, packet, decision, "v1")
     [row] = db.query("select rec_id, pick, source, visitor from recommendations")
     assert row == {"rec_id": rec_id, "pick": "NACUA", "source": "baseline", "visitor": "v1"}
+
+
+def test_the_page_compares_two_players_and_ignores_extras(path):
+    client = client_for(path)
+    assert client.get("/").text.count('name="players"') == 2
+    r = ask(client, "Alpha Back", "Bravo Back", "Nobody Here", hx=True)
+    assert "Start <strong>Alpha Back</strong>" in r.text  # a third name is ignored, not looked up
+
+
+def test_citation_links_escape_text_and_skip_unknown_ids():
+    from startsit.web.app import link_citations
+
+    html = str(link_citations("<b>x</b> [E1] and E7, not E99", {"E1", "E7"}))
+    assert (
+        html == '&lt;b&gt;x&lt;/b&gt; <a class="cite" href="#E1">E1</a> and <a class="cite" href="#E7">E7</a>, not E99'
+    )

@@ -1,0 +1,15 @@
+<section class="evidence">
+  <h2>The evidence</h2>
+  {% for p in packet.players %}
+  <div class="player{% if decision and p.player_id == decision.pick %} picked{% endif %}">
+    <h3>{{ p.name }} <span class="pos">{{ p.position }}, {{ p.team or "free agent" }}</span></h3>
+    <p class="baseline">Baseline {{ "%.1f"|format(p.score.points) }} pts{% if p.score.note %} ({{ p.score.note }}){% endif %}</p>
+    <ul>
+      {% for item in p.items %}
+      <li id="{{ item.id }}"><span class="id">{{ item.id }}</span> <span class="kind">{{ kind_labels[item.kind] }}</span>
+        {{ item.text }}{% if item.source_url %} <a href="{{ item.source_url }}" rel="noopener nofollow" target="_blank">source</a>{% endif %}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endfor %}
+</section>
