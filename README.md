@@ -118,7 +118,7 @@ packet, retries once with the problems, and otherwise falls back to the baseline
 so a repeat question costs nothing until the evidence changes.
 
 Free-tier protections (`startsit/llm.py`, enforced before every call by counting `llm_calls`):
-- daily budgets per purpose: 400 decisions, 60 news calls, 30 benchmark calls (Gemini allows 500/day);
+- daily budgets per purpose: 390 decisions, 60 news calls, 45 benchmark calls (Gemini allows 500/day);
 - one shared cap of 12 calls/minute across ingest and web requests (Gemini allows 15);
 - per visitor (web app): 6 new AI answers per 10 minutes and 25 per day, keyed by a salted hash
   of the IP address (`VISITOR_SALT`); cached answers don't count.
@@ -140,10 +140,16 @@ the AI wasn't used), the code baseline, and the raw FantasyPros consensus on the
 the matchups the AI answered, and also shows how the AI did when it went against the baseline
 and how often each confidence level hit. The daily stats refresh scores new results.
 
-Real questions are too few for meaningful hit rates, so each week a benchmark set of 20 close
+Real questions are too few for meaningful hit rates, so each week a benchmark set of 30 close
 matchups (same position, neighbors in the consensus ranks, borderline starters) is asked of the
 AI four hours before the Sunday main slate (`startsit/benchmark.py`, run by the ingest job,
 10 s between calls). They're logged with `visitor = "benchmark"` and reported separately.
+
+Past weeks (2 onward) are backfilled one a day: the same 30-matchup set, asked as of that
+week's Sunday morning with the rankings scrape from just before it (read from the rankings
+file's git history). Questions only ever see rankings and projections from on or before the
+time asked. Backfilled weeks have no news before Oct 24, 2026, so they're reported apart
+(`benchmark-backfill`).
 
 ## Baseline and evidence packet (Stage 2)
 ```bash

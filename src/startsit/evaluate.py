@@ -27,7 +27,10 @@ from typing import Any, cast
 from startsit.db import Database, EvaluationRow, RecommendationRow, utc_iso
 from startsit.scoring import Scoring, column
 
-BENCHMARK = "benchmark"  # recommendations.visitor of the weekly benchmark set (startsit.benchmark)
+# recommendations.visitor of the weekly benchmark set and its backfill of past weeks (startsit.benchmark)
+BENCHMARK = "benchmark"
+BACKFILL = "benchmark-backfill"
+GROUPS = {BENCHMARK: "benchmark", BACKFILL: "backfill"}  # anything else is a real user
 AI_SOURCES = {"llm", "cache"}
 CONFIDENCES = ("high", "medium", "low")
 
@@ -61,7 +64,7 @@ def hit(pick: str | None, points: dict[str, float]) -> int | None:
 def consensus_pick(db: Database, rec: RecommendationRow, player_ids: list[str]) -> str | None:
     """The raw FantasyPros consensus pick on the day asked; None when it can't choose."""
     day = rec["created_at"][:10]
-    ranks = {pid: db.ranking_on(pid, rec["season"], rec["week"], day) for pid in player_ids}
+    ranks = {pid: db.latest_ranking(pid, rec["season"], rec["week"], through_day=day) for pid in player_ids}
     ranked = {pid: r for pid, r in ranks.items() if r is not None and r["ecr"] is not None}
     if len(ranked) <= 1:
         return next(iter(ranked), None)  # an unranked player loses to a ranked one
@@ -170,12 +173,12 @@ class Summary:
 @dataclass
 class Report:
     season: int
-    weeks: dict[str, dict[int, Summary]]  # group ("users" | "benchmark") -> week -> summary
+    weeks: dict[str, dict[int, Summary]]  # group ("users" | "benchmark" | "backfill") -> week -> summary
     totals: dict[str, Summary]
 
 
 def group_of(row: dict[str, Any]) -> str:
-    return "benchmark" if row["visitor"] == BENCHMARK else "users"
+    return GROUPS.get(row["visitor"], "users")
 
 
 def build_report(db: Database, season: int) -> Report:
@@ -193,7 +196,7 @@ def report_text(report: Report) -> str:
         f"Season {report.season} track record. On the matchups the AI answered: AI, baseline, consensus, "
         "and the AI's picks against the baseline. On all matchups: baseline, consensus."
     ]
-    for group in ("users", "benchmark"):
+    for group in ("users", *GROUPS.values()):
         if group not in report.totals:
             continue
         lines.append(f"\n{group}:")

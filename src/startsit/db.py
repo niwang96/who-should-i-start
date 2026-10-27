@@ -574,26 +574,43 @@ class Database:
 
     # --- rankings --------------------------------------------------------------
 
-    def latest_ranking(self, player_id: str, season: int, week: int) -> RankingRow | None:
-        return cast(
-            "RankingRow | None", self._player_row("rankings", player_id, season, "week = ?", week, "scrape_date")
+    # `through_day` (YYYY-MM-DD, UTC) limits these to archived copies from that day or earlier, so a
+    # question asked in the past (the benchmark backfill) sees only what existed then.
+
+    def _latest_copy(
+        self, table: str, date_column: str, player_id: str, season: int, week: int, through_day: str | None
+    ) -> dict[str, Any] | None:
+        return self._one(
+            f"SELECT * FROM {table} WHERE player_id = ? AND season = ? AND week = ? AND {date_column} <= ? "
+            f"ORDER BY {date_column} DESC LIMIT 1",
+            (player_id, season, week, through_day or "9999-12-31"),
         )
 
-    def rankings_for_week(self, season: int, week: int) -> list[RankingRow]:
-        """Every player's ranking from the latest scrape of the week."""
+    def latest_ranking(
+        self, player_id: str, season: int, week: int, through_day: str | None = None
+    ) -> RankingRow | None:
+        return cast(
+            "RankingRow | None", self._latest_copy("rankings", "scrape_date", player_id, season, week, through_day)
+        )
+
+    def rankings_for_week(self, season: int, week: int, through_day: str | None = None) -> list[RankingRow]:
+        """Every player's ranking from the latest scrape of the week (on or before `through_day`)."""
+        day = through_day or "9999-12-31"
         return cast(
             "list[RankingRow]",
             self.query(
                 "SELECT * FROM rankings WHERE season = ? AND week = ? AND scrape_date = "
-                "(SELECT max(scrape_date) FROM rankings WHERE season = ? AND week = ?)",
-                (season, week, season, week),
+                "(SELECT max(scrape_date) FROM rankings WHERE season = ? AND week = ? AND scrape_date <= ?)",
+                (season, week, season, week, day),
             ),
         )
 
-    def latest_projection(self, player_id: str, season: int, week: int) -> ProjectionRow | None:
+    def latest_projection(
+        self, player_id: str, season: int, week: int, through_day: str | None = None
+    ) -> ProjectionRow | None:
         return cast(
             "ProjectionRow | None",
-            self._player_row("projections", player_id, season, "week = ?", week, "fetched_date"),
+            self._latest_copy("projections", "fetched_date", player_id, season, week, through_day),
         )
 
     def latest_rankings_week(self, season: int) -> int | None:
@@ -690,17 +707,6 @@ class Database:
                 (season, week, team),
             )
             is not None
-        )
-
-    def ranking_on(self, player_id: str, season: int, week: int, day: str) -> RankingRow | None:
-        """The player's week ranking from the latest scrape on or before `day` (YYYY-MM-DD)."""
-        return cast(
-            "RankingRow | None",
-            self._one(
-                "SELECT * FROM rankings WHERE player_id = ? AND season = ? AND week = ? AND scrape_date <= ? "
-                "ORDER BY scrape_date DESC LIMIT 1",
-                (player_id, season, week, day),
-            ),
         )
 
     def unscored_recommendations(self) -> list[RecommendationRow]:

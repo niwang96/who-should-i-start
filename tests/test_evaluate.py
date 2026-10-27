@@ -147,6 +147,7 @@ def test_report_compares_the_picks_on_the_matchups_the_ai_answered(week):
             rec("ai-wrong", ab, pick="B", baseline_pick="B", source="cache", confidence="low"),
             rec("no-ai", ab, pick="B", source="baseline"),  # counted as a matchup, not in the rates
             rec("bench", ab, pick="A", visitor=evaluate.BENCHMARK),
+            rec("backfill", ab, pick="B", visitor=evaluate.BACKFILL),
         ],
     )
     evaluate.score_pending(week, NOW)
@@ -159,11 +160,16 @@ def test_report_compares_the_picks_on_the_matchups_the_ai_answered(week):
     assert (str(users.by_confidence["high"]), str(users.by_confidence["medium"])) == ("1/1 (100%)", "-")
     assert report.weeks["users"][7].matchups == 3
     assert str(report.totals["benchmark"].ai) == "1/1 (100%)"
+    assert str(report.totals["backfill"].ai) == "0/1 (0%)"
 
     text = evaluate.report_text(report)
     assert "users:\n    week 7: 2 AI-answered | AI 1/2 (50%) | baseline 0/2 (0%)" in text
     assert "|| all 3: baseline 0/3 (0%) | consensus 0/3 (0%)" in text
-    assert "benchmark:" in text and "AI by confidence: high 1/1 (100%), medium -, low 0/1 (0%)" in text
+    assert (
+        "benchmark:" in text
+        and "backfill:" in text
+        and "AI by confidence: high 1/1 (100%), medium -, low 0/1 (0%)" in text
+    )
 
 
 def test_report_without_data():

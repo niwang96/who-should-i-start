@@ -28,13 +28,18 @@ on:
         description: "Season to ingest (default: current)"
         required: false
 
+# The job only reads (its token looks up past rankings scrapes in a public repo).
+permissions:
+  contents: read
+
 # Never run two ingests at once against the same database.
 concurrency: ingest
 
 jobs:
   ingest:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # A benchmark set (live or backfill) adds ~6 minutes: 30 AI calls, 10 s apart.
+    timeout-minutes: 25
     env:
       # Supabase when the secret is set; otherwise a fresh SQLite file uploaded as an artifact.
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -42,6 +47,8 @@ jobs:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       # Without it, the daily run skips FantasyPros projections.
       FANTASYPROS_API_KEY: ${{ secrets.FANTASYPROS_API_KEY }}
+      # The workflow's own read-only token, for looking up past rankings scrapes (benchmark backfill).
+      GITHUB_TOKEN: ${{ github.token }}
       STARTSIT_DB_PATH: data/startsit.db
     steps:
       - uses: actions/checkout@v5

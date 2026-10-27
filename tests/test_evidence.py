@@ -358,7 +358,7 @@ def test_news_status_from_before_the_teams_last_game_is_ignored(seeded):
     seeded.upsert(
         "news_facts", [news_fact("NACUA", "2026-10-18T12:00:00+00:00", "Out for Sunday.", 9, game_status="out")]
     )
-    p = build_packet(seeded, ["NACUA", "SMITH"], "ppr", 2026, 7, as_of=datetime(2026, 10, 22, tzinfo=UTC))
+    p = build_packet(seeded, ["NACUA", "SMITH"], "ppr", 2026, 7, as_of=datetime(2026, 10, 23, 12, tzinfo=UTC))
     assert p.players[0].score.points == 24.5  # last week's "out" doesn't count this week
 
 
@@ -388,9 +388,21 @@ def test_in_game_news_from_last_weeks_late_game_is_ignored(seeded):
             news_fact("SMITH", "2026-10-20T02:30:00+00:00", "Unrelated team, same time.", 11, game_status="out"),
         ],
     )
-    p = build_packet(seeded, ["NACUA", "SMITH"], "ppr", 2026, 7, as_of=datetime(2026, 10, 22, tzinfo=UTC))
+    p = build_packet(seeded, ["NACUA", "SMITH"], "ppr", 2026, 7, as_of=datetime(2026, 10, 23, 12, tzinfo=UTC))
     assert p.players[0].score.points == 24.5  # during LA's game: not a status for week 7
     assert p.players[1].score.points == 0.0  # PHI's week-6 game (no date in the fixture) doesn't cover it
     seeded.upsert("news_facts", [news_fact("NACUA", "2026-10-20T15:00:00+00:00", "Ruled out.", 12, game_status="out")])
-    p = build_packet(seeded, ["NACUA", "SMITH"], "ppr", 2026, 7, as_of=datetime(2026, 10, 22, tzinfo=UTC))
+    p = build_packet(seeded, ["NACUA", "SMITH"], "ppr", 2026, 7, as_of=datetime(2026, 10, 23, 12, tzinfo=UTC))
     assert p.players[0].score.points == 0.0  # the next day: counts
+
+
+def test_a_past_question_sees_only_rankings_and_projections_from_then(seeded):
+    seeded.upsert("rankings", [ranking("NACUA", 10.0, scrape_date="2026-10-25")])  # a later scrape
+    seeded.upsert("projections", [projection("NACUA", 9.0, fetched_date="2026-10-25")])
+    then = build_packet(seeded, ["NACUA", "SMITH"], "half", 2026, 7, as_of=datetime(2026, 10, 24, tzinfo=UTC))
+    now = build_packet(seeded, ["NACUA", "SMITH"], "ppr", 2026, 7)
+    # Then: the Oct 23 projection (24.5 PPR) converted with usage-based catches (10.0), since the
+    # FantasyPros catches (9.0) were fetched later. Now: the Oct 25 scrape.
+    assert then.players[0].score.points == 19.5 and now.players[0].score.points == 10.0
+    assert "rankings as of 2026-10-23" in then.to_text() and "rankings as of 2026-10-25" in now.to_text()
+    assert "expected catches/game from recent usage" in then.to_text()

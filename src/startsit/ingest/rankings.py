@@ -9,12 +9,18 @@ Skill positions are ranked on PPR pages only; other formats are derived downstre
 
 Files are read from raw.githubusercontent.com rather than through nflreadpy, whose
 github.com/.../raw URLs some proxies (including the Claude Code cloud env) block.
+
+Past scrapes: the file's git history keeps every scrape (about two a day), so the benchmark
+backfill can read the rankings as they were before a past Sunday (`snapshot_before`).
 """
 
 from __future__ import annotations
 
 import io
+import json
+import os
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 import polars as pl
 
@@ -24,6 +30,11 @@ from startsit.http import get_bytes
 BASE_URL = "https://raw.githubusercontent.com/dynastyprocess/data/master/files"
 RANKINGS_URL = f"{BASE_URL}/fp_latest_weekly.csv"
 PLAYER_IDS_URL = f"{BASE_URL}/db_playerids.csv"
+# The newest commit of the rankings file at or before a time, and the file as of a commit.
+COMMITS_URL = (
+    "https://api.github.com/repos/dynastyprocess/data/commits?path=files/fp_latest_weekly.csv&per_page=1&until={until}"
+)
+SNAPSHOT_URL = "https://raw.githubusercontent.com/dynastyprocess/data/{sha}/files/fp_latest_weekly.csv"
 
 SKILL_PAGES = ["qb", "ppr-rb", "ppr-wr", "ppr-te"]
 FLOAT_COLS = {"ecr": "ecr", "sd": "ecr_sd", "best": "ecr_best", "worst": "ecr_worst", "r2p_pts": "proj_ppr"}
@@ -41,8 +52,26 @@ def _read_csv(url: str) -> pl.DataFrame:
     return pl.read_csv(io.BytesIO(body), infer_schema_length=0, null_values=["NA", ""])
 
 
-def fetch() -> RawRankings:
-    return RawRankings(rankings=_read_csv(RANKINGS_URL), player_ids=_read_csv(PLAYER_IDS_URL))
+def fetch(url: str = RANKINGS_URL) -> RawRankings:
+    return RawRankings(rankings=_read_csv(url), player_ids=_read_csv(PLAYER_IDS_URL))
+
+
+def snapshot_before(when: datetime) -> str | None:
+    """The commit of the newest rankings scrape at or before `when`, or None.
+
+    Uses $GITHUB_TOKEN when set (GitHub Actions provides one): anonymous API calls are limited
+    per IP, and runners share IPs.
+    """
+    headers = {"Accept": "application/vnd.github+json"}
+    if token := os.environ.get("GITHUB_TOKEN"):
+        headers["Authorization"] = f"Bearer {token}"
+    until = when.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    commits = json.loads(get_bytes(COMMITS_URL.format(until=until), headers=headers))
+    return str(commits[0]["sha"]) if commits else None
+
+
+def fetch_snapshot(sha: str) -> RawRankings:
+    return fetch(SNAPSHOT_URL.format(sha=sha))
 
 
 def infer_week(kickoff_ts: pl.Series, games: pl.DataFrame) -> int | None:
@@ -76,6 +105,8 @@ def build_rankings(raw: RawRankings, games: pl.DataFrame, season: int) -> pl.Dat
     keeps a backfill of an old season from filing this week's rankings under it.
     """
     skill = raw.rankings.filter(pl.col("page").is_in(SKILL_PAGES))
+    if "player_game_kickoff_ts" not in skill.columns:  # 2026 week 1 scrapes lack it
+        return pl.DataFrame(schema=TABLES["rankings"].polars_schema())
     week = infer_week(skill["player_game_kickoff_ts"], games.filter(pl.col("season") == season))
     if week is None or skill.is_empty():
         return pl.DataFrame(schema=TABLES["rankings"].polars_schema())

@@ -31,7 +31,7 @@ import polars as pl
 
 from startsit import benchmark, evaluate
 from startsit.db import TABLES, Database
-from startsit.evidence import current_week
+from startsit.evidence import EASTERN, current_week
 from startsit.features import compute_usage_features
 from startsit.ingest import news, news_extract, nflverse, projections, rankings
 from startsit.llm import BudgetedLLM, GeminiProvider, LLMError
@@ -159,17 +159,48 @@ def run_evaluation(db: Database) -> int:
     return n
 
 
+def benchmark_llm(db: Database) -> BudgetedLLM | None:
+    try:
+        return BudgetedLLM(GeminiProvider(), db, "benchmark", benchmark.BENCHMARK_DAILY_LLM_BUDGET)
+    except LLMError as e:
+        log.warning("benchmark skipped: %s", e)
+        return None
+
+
 def run_benchmark(db: Database, season: int, now: datetime | None = None) -> int:
     """The weekly benchmark matchups, when they're due and the AI is available."""
     week = current_week(db, season)
     if not benchmark.due(db, season, week, now or datetime.now(UTC)):
         return 0
-    try:
-        llm = BudgetedLLM(GeminiProvider(), db, "benchmark", benchmark.BENCHMARK_DAILY_LLM_BUDGET)
-    except LLMError as e:
-        log.warning("benchmark skipped: %s", e)
+    llm = benchmark_llm(db)
+    return benchmark.run(db, llm, season, week) if llm else 0
+
+
+def run_backfill(db: Database, season: int, now: datetime | None = None) -> int:
+    """Ask one past week's benchmark set as of its Sunday morning, when today's budget allows.
+
+    Not on Sundays (the budget is the live set's), and only with room for a whole set, so in
+    practice one week a day, newest first. The rankings scrape from before that Sunday is read
+    from the file's git history and archived, so the packets hold what was known then.
+    """
+    now = now or datetime.now(UTC)
+    if now.astimezone(EASTERN).weekday() == 6:
         return 0
-    return benchmark.run(db, llm, season, week)
+    target = benchmark.backfill_week(db, season, current_week(db, season), now)
+    if target is None:
+        return 0
+    week, as_of = target
+    llm = benchmark_llm(db)
+    if llm is None or llm.remaining(now) < sum(benchmark.PAIRS.values()):
+        return 0
+    sha = rankings.snapshot_before(as_of)
+    games = pl.DataFrame(db.games(season), schema=TABLES["games"].polars_schema())
+    ranked = rankings.build_rankings(rankings.fetch_snapshot(sha), games, season) if sha else None
+    if ranked is None or ranked.is_empty() or int(ranked["week"][0]) != week:
+        log.warning("backfill week %s: no rankings scrape for that week before %s", week, as_of)
+        return 0
+    db.upsert("rankings", ranked.to_dicts())
+    return benchmark.run(db, llm, season, week, as_of=as_of, tag=evaluate.BACKFILL)
 
 
 def _optional(step: str, fn: Callable[[], object]) -> None:
@@ -220,6 +251,7 @@ def main() -> None:
             run_news(db, news.fetch_all(), llm, args.season)
         if args.only == "news":
             _optional("benchmark", lambda: run_benchmark(db, args.season))
+            _optional("benchmark backfill", lambda: run_backfill(db, args.season))
 
 
 if __name__ == "__main__":
