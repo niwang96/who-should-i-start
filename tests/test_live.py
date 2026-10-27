@@ -176,6 +176,7 @@ REDDIT_ROUTES = (
     "https://www.reddit.com/r/fantasyfootball/new.json?limit=5",
     "https://old.reddit.com/r/fantasyfootball/new.json?limit=5",
     "https://www.reddit.com/r/fantasyfootball/new/.rss?limit=5",
+    "https://www.reddit.com/r/fantasyfootball/comments/.rss?limit=5",  # newest comments, sub-wide
 )
 
 
