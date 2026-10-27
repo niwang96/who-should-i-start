@@ -247,16 +247,16 @@ def test_a_news_run_does_the_daily_refresh_when_it_is_due(tmp_path, monkeypatch,
 def test_ingest_runs_the_benchmark_only_when_due_and_with_a_key(tmp_path, monkeypatch, caplog):
     from datetime import UTC, datetime
 
-    path = seed(tmp_path / "b.db")  # week 7, first Sunday kickoff Oct 25 1pm Eastern (17:00 UTC)
+    path = seed(tmp_path / "b.db")  # week 7, first Sunday kickoff Oct 25 1pm Eastern (17:00 UTC): due from 14:00
     calls = []
     monkeypatch.setattr(ingest_main.benchmark, "run", lambda db, llm, season, week: calls.append(week) or 3)
     with Database(path) as db:
         assert ingest_main.run_benchmark(db, 2026, datetime(2026, 10, 25, 12, 0, tzinfo=UTC)) == 0  # not yet
         monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-        assert ingest_main.run_benchmark(db, 2026, datetime(2026, 10, 25, 13, 30, tzinfo=UTC)) == 0
+        assert ingest_main.run_benchmark(db, 2026, datetime(2026, 10, 25, 14, 30, tzinfo=UTC)) == 0
         assert "benchmark skipped: GEMINI_API_KEY is not set" in caplog.text
         monkeypatch.setenv("GEMINI_API_KEY", "test-key")
-        assert ingest_main.run_benchmark(db, 2026, datetime(2026, 10, 25, 13, 30, tzinfo=UTC)) == 3
+        assert ingest_main.run_benchmark(db, 2026, datetime(2026, 10, 25, 14, 30, tzinfo=UTC)) == 3
     assert calls == [7]
 
 
@@ -303,7 +303,7 @@ def test_ingest_backfills_one_past_week_as_of_its_sunday_morning(tmp_path, monke
 
     path = seed(tmp_path / "b.db")  # week 7: Sunday Oct 25, 1pm Eastern
     tuesday, sunday = datetime(2026, 10, 27, 12, 0, tzinfo=UTC), datetime(2026, 11, 1, 12, 0, tzinfo=UTC)
-    as_of = datetime(2026, 10, 25, 13, 0, tzinfo=UTC)
+    as_of = datetime(2026, 10, 25, 14, 0, tzinfo=UTC)
     runs = []
     monkeypatch.setattr(
         ingest_main.benchmark, "run", lambda db, llm, season, week, as_of, tag: runs.append((week, as_of, tag)) or 30

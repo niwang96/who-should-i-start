@@ -142,8 +142,8 @@ and how often each confidence level hit. The daily stats refresh scores new resu
 
 Real questions are too few for meaningful hit rates, so each week a benchmark set of 30 close
 matchups (same position, neighbors in the consensus ranks, borderline starters) is asked of the
-AI four hours before the Sunday main slate (`startsit/benchmark.py`, run by the ingest job,
-10 s between calls). They're logged with `visitor = "benchmark"` and reported separately.
+AI three hours before the Sunday main slate, 10am Eastern for the 1pm games (`startsit/benchmark.py`,
+run by the ingest job, 15 s between calls). They're logged with `visitor = "benchmark"` and reported separately.
 
 Past weeks (2 onward) are backfilled one a day: the same 30-matchup set, asked as of that
 week's Sunday morning with the rankings scrape from just before it (read from the rankings
