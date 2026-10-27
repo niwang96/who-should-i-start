@@ -29,10 +29,9 @@
         <legend>Players</legend>
         {% for i in range(max_players) %}
         {% set value = players[i] if i < players|length else "" %}
-        <label for="player-{{ i }}">Player {{ i + 1 }}{% if i >= 2 %} <span class="optional">(optional)</span>{% endif %}</label>
+        <label for="player-{{ i }}">Player {{ i + 1 }}</label>
         <input id="player-{{ i }}" name="players" value="{{ value }}" list="player-options"
-               autocomplete="off" maxlength="60" placeholder="{{ ['e.g. Puka Nacua', 'e.g. DeVonta Smith', '', ''][i] }}"
-               {% if i < 2 %}required{% endif %}>
+               autocomplete="off" maxlength="60" placeholder="{{ ['e.g. Puka Nacua', 'e.g. DeVonta Smith'][i] }}" required>
         {% endfor %}
         <datalist id="player-options">{% include "_options.html" %}</datalist>
         <p class="hint">Same name on two teams? Add the team: <code>Ryan Miller (NE)</code></p>

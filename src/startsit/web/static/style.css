@@ -92,6 +92,10 @@ button {
 .note, .warning { background: var(--warn-bg); border-left: 4px solid var(--warn-line); padding: 0.5rem 0.75rem; border-radius: 4px; }
 .error { background: var(--error-bg); border-left: 4px solid var(--error-line); padding: 0.75rem; border-radius: 4px; margin-bottom: 1rem; }
 .factors li { margin-bottom: 0.35rem; }
+.summary { margin: 0 0 0.75rem; }
+.explain { margin: 0.5rem 0 0; font-size: 0.9rem; }
+.explain summary { cursor: pointer; color: var(--accent); }
+.explain p { margin: 0.4rem 0; color: var(--muted); }
 .cite { font-size: 0.75rem; margin-left: 0.25rem; padding: 0 0.3rem; border: 1px solid var(--line); border-radius: 4px; text-decoration: none; }
 
 .evidence .player.picked { border-color: var(--accent); }

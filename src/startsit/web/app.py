@@ -12,6 +12,7 @@ Run locally: uvicorn startsit.web.app:app --reload  (uses $DATABASE_URL or the S
 # No `from __future__ import annotations` here: FastAPI reads the endpoint annotations at
 # runtime, including the `DB` alias defined inside create_app.
 import logging
+import re
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -23,10 +24,11 @@ from fastapi import Depends, FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from markupsafe import Markup, escape
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
 from startsit.db import Database
-from startsit.decide import Decision, decide, decide_llm, record_recommendation
+from startsit.decide import HIGH_MARGIN, MEDIUM_MARGIN, Decision, decide, decide_llm, record_recommendation
 from startsit.evidence import EvidencePacket, PlayerLookupError, current_week, eastern_time, packet_for_names
 from startsit.llm import BudgetedLLM, visitor_id
 from startsit.names import PlayerMatcher
@@ -35,7 +37,7 @@ from startsit.scoring import LABELS, SCORINGS, Scoring
 log = logging.getLogger("startsit.web")
 
 HERE = Path(__file__).parent
-MAX_PLAYERS = 4
+MAX_PLAYERS = 2  # the page compares two players (the engine takes more)
 MAX_NAME_LENGTH = 60
 PLAYER_CACHE_SECONDS = 3600  # the players table changes once a day, with the ingest
 
@@ -77,6 +79,19 @@ class WeekInfo:
     stats_as_of: str | None
 
 
+_CITATION = re.compile(r"\[?\b(E\d+)\b\]?")
+
+
+def link_citations(text: str, known_ids: set[str]) -> Markup:
+    """Escape `text` and turn evidence ids like [E2] into links to that item on the page."""
+
+    def link(m: re.Match[str]) -> str:
+        item = m.group(1)
+        return f'<a class="cite" href="#{item}">{item}</a>' if item in known_ids else m.group(0)
+
+    return Markup(_CITATION.sub(link, str(escape(text))))
+
+
 def client_address(request: Request) -> str:
     """The visitor's IP: the first X-Forwarded-For hop behind a proxy (Vercel sets it), else the socket's."""
     forwarded = request.headers.get("x-forwarded-for", "")
@@ -96,9 +111,15 @@ def create_app(
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
     templates = Jinja2Templates(directory=HERE / "templates")
     templates.env.globals.update(
-        scorings=SCORINGS, scoring_labels=LABELS, source_labels=SOURCE_LABELS, kind_labels=KIND_LABELS
+        scorings=SCORINGS,
+        scoring_labels=LABELS,
+        source_labels=SOURCE_LABELS,
+        kind_labels=KIND_LABELS,
+        high_margin=HIGH_MARGIN,
+        medium_margin=MEDIUM_MARGIN,
     )
     templates.env.filters["eastern"] = eastern_time
+    templates.env.filters["link_citations"] = link_citations
 
     setup_done = False  # create missing tables once per process, not on every request
     matcher_cache: dict[str, Any] = {}

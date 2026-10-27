@@ -128,12 +128,14 @@ def test_decide_cli_with_and_without_the_ai(tmp_path, monkeypatch, capsys):
             {"text": "Higher projection.", "evidence_ids": ["E2"]},
             {"text": "Favored.", "evidence_ids": ["E3"]},
         ],
+        "summary": "Alpha Back projects higher [E2] and his team is favored [E3].",
         "baseline_disagreement": "",
     }
     monkeypatch.setattr(decide, "GeminiProvider", lambda: FakeProvider(responses=[answer]))
     run_cli(monkeypatch, decide.main, "Alpha Back", "Bravo Back", "--db", path)
     out = capsys.readouterr().out
-    assert "Start Alpha Back (medium confidence; llm)\n  - Higher projection. [E2]" in out
+    assert "Start Alpha Back (medium confidence; llm)\n  Alpha Back projects higher [E2]" in out
+    assert "  - Higher projection. [E2]" in out
 
 
 def test_decide_llm_is_none_without_a_key_and_carries_visitor_limits(tmp_path, monkeypatch):

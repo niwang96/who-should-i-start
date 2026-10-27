@@ -11,7 +11,27 @@
   </p>
   {% if decision.note %}<p class="note">{{ decision.note }}</p>{% endif %}
 
+  <details class="explain">
+    <summary>What do the confidence and "{{ source_labels[decision.source] }}" mean?</summary>
+    {% if decision.source == "baseline" %}
+    <p><strong>Baseline pick:</strong> the AI wasn't used (the note above says why), so this is the
+      expert-consensus pick: the higher FantasyPros projection in your scoring format.</p>
+    <p><strong>Confidence</strong> comes from the gap between the two projections:
+      <strong>High</strong> {{ "%g"|format(high_margin) }}+ points,
+      <strong>Medium</strong> {{ "%g"|format(medium_margin) }} to {{ "%g"|format(high_margin) }} points,
+      <strong>Low</strong> under {{ "%g"|format(medium_margin) }} points (a close call).</p>
+    {% else %}
+    <p><strong>AI pick:</strong> an AI weighed only the evidence listed below, starting from the expert
+      consensus, and every reason was checked against that evidence before you saw it.</p>
+    <p><strong>Confidence</strong> is how clear-cut the choice is. <strong>High:</strong> one player is
+      clearly better, or the other may not play. <strong>Medium:</strong> a clear lean.
+      <strong>Low:</strong> a close call; either choice is reasonable. A player listed questionable or
+      doubtful is never rated High.</p>
+    {% endif %}
+  </details>
+
   <h2>Why</h2>
+  {% if decision.summary %}<p class="summary">{{ decision.summary|link_citations(packet.item_ids) }}</p>{% endif %}
   <ul class="factors">
     {% for f in decision.factors %}
     <li>{{ f.text }}
@@ -21,7 +41,7 @@
   </ul>
   {% if decision.baseline_disagreement %}
   <p class="disagreement"><strong>Differs from the baseline ({{ names[decision.baseline_pick] }}):</strong>
-    {{ decision.baseline_disagreement }}</p>
+    {{ decision.baseline_disagreement|link_citations(packet.item_ids) }}</p>
   {% endif %}
 
   {% for p in packet.players if p.game_started %}
