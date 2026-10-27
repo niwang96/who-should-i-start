@@ -183,3 +183,10 @@ def test_evidence_is_a_side_by_side_comparison(path):
     assert '<div class="kind">Expert consensus</div>' in r.text and "Injury report" not in r.text
     assert r.text.count('class="cell picked"') == 3 and r.text.count('class="cell"') == 3
     assert r.text.index('id="E1"') < r.text.index('id="E4"') < r.text.index('id="E2"')  # read across, row by row
+
+
+def test_scoring_is_a_toggle_of_real_radio_buttons(path):
+    r = client_for(path).get("/")
+    assert r.text.count('type="radio" name="scoring"') == 3 and 'class="segmented"' in r.text
+    assert 'value="ppr" checked' in r.text  # PPR is the default
+    assert "Same name on two teams" not in r.text  # the ambiguity error explains it when it happens

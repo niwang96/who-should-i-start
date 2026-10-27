@@ -51,7 +51,7 @@ p { margin: 0 0 0.5rem; }
 header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0.25rem 1.5rem; margin-bottom: 1rem; }
 .header-meta { text-align: right; }
 .week { margin: 0; }
-.freshness, .hint, .pos, .baseline, .meta, footer, .about { color: var(--muted); font-size: 0.85rem; }
+.freshness, .pos, .baseline, .meta, footer, .about { color: var(--muted); font-size: 0.85rem; }
 .freshness { margin: 0; }
 
 form, .answer, .evidence {
@@ -75,11 +75,20 @@ input[name="players"] {
   background: var(--bg);
   color: var(--text);
 }
-.controls { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1.25rem; margin-top: 0.75rem; }
-fieldset { border: 0; margin: 0; padding: 0; display: flex; align-items: center; gap: 0.25rem 0.9rem; flex-wrap: wrap; }
-legend { float: left; font-size: 0.85rem; color: var(--muted); margin-right: 0.25rem; }
-.scoring label.radio { display: inline-flex; align-items: center; gap: 0.3rem; margin: 0; font-size: 0.95rem; color: var(--text); }
-.hint { margin: 0 0 0 auto; }
+/* Scoring on the left, the button fixed to the right edge (under Player 2). */
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem 1.25rem; margin-top: 1.5rem; }
+.go { margin-left: auto; display: flex; align-items: center; gap: 0.75rem; }
+fieldset { border: 0; margin: 0; padding: 0; display: flex; align-items: center; gap: 0.6rem; }
+legend { float: left; font-size: 0.85rem; color: var(--muted); }
+
+/* Scoring as a segmented toggle; still real radio buttons, so it works without JS and by keyboard. */
+.segmented { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--bg); }
+.segmented label { position: relative; margin: 0; font-size: 0.95rem; color: var(--text); }
+.segmented label + label { border-left: 1px solid var(--line); }
+.segmented input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+.segmented span { display: block; padding: 0.45rem 0.9rem; cursor: pointer; white-space: nowrap; }
+.segmented input:checked + span { background: var(--accent); color: var(--accent-text); font-weight: 600; }
+.segmented input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: -4px; }
 
 button {
   padding: 0.6rem 1.2rem;
@@ -155,7 +164,13 @@ footer { border-top: 1px solid var(--line); padding-top: 0.75rem; }
   .header-meta { text-align: left; margin-top: 0.25rem; }
   .matchup { grid-template-columns: 1fr; gap: 0.5rem; }
   .vs { padding: 0; text-align: center; }
-  .hint { margin-left: 0; }
+  .controls { margin-top: 1rem; }
+  .scoring { display: block; width: 100%; }
+  legend { float: none; margin-bottom: 0.3rem; }
+  .segmented { width: 100%; }
+  .segmented label { flex: 1; text-align: center; }
+  .go { width: 100%; flex-direction: column-reverse; }
+  .go button { width: 100%; }
   .answer { display: block; }
   .why-col { margin-top: 1rem; }
   .compare { grid-template-columns: 1fr; }
