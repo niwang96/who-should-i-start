@@ -43,6 +43,6 @@ jobs:
           python-version: "3.13"
           cache: pip
       - run: pip install -e '.[dev,ingest]'
-      - run: pytest -m live -v -k "$ONLY"
+      - run: pytest -m live -v -rA -k "$ONLY"
         env:
           ONLY: ${{ inputs.only }}
