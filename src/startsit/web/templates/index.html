@@ -43,13 +43,16 @@
       <div class="controls">
         <fieldset class="scoring">
           <legend>Scoring</legend>
-          {% for s in scorings %}
-          <label class="radio"><input type="radio" name="scoring" value="{{ s }}" {% if s == scoring %}checked{% endif %}> {{ scoring_labels[s] }}</label>
-          {% endfor %}
+          <div class="segmented">
+            {% for s in scorings %}
+            <label><input type="radio" name="scoring" value="{{ s }}" {% if s == scoring %}checked{% endif %}><span>{{ scoring_labels[s] }}</span></label>
+            {% endfor %}
+          </div>
         </fieldset>
-        <button type="submit">Who should I start?</button>
-        <span id="asking" class="htmx-indicator" role="status">Weighing the evidence…</span>
-        <p class="hint">Same name on two teams? Add the team: <code>Ryan Miller (NE)</code></p>
+        <div class="go">
+          <span id="asking" class="htmx-indicator" role="status">Weighing the evidence…</span>
+          <button type="submit">Who should I start?</button>
+        </div>
       </div>
     </form>
 
