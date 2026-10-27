@@ -88,11 +88,15 @@ def test_bad_questions_show_a_message(path, players, message):
     assert r.status_code == 200 and message in r.text and 'role="alert"' in r.text
 
 
-def test_suggestions_offer_name_and_team(path):
+def test_the_page_ships_every_player_for_suggestions_and_only_the_button_submits(path):
     client = client_for(path)
-    r = client.get("/players", params={"players": "alp"})
+    r = client.get("/")
     assert '<option value="Alpha Back (PHI)">RB, PHI</option>' in r.text
-    assert client.get("/players", params={"players": "a"}).text.strip() == ""  # too short to search
+    assert '<option value="Bravo Back (DAL)">RB, DAL</option>' in r.text
+    assert "hx-get" not in r.text  # nothing is fetched while typing
+    assert "/static/app.js" in r.text
+    assert "event.preventDefault()" in client.get("/static/app.js").text  # Enter doesn't submit
+    assert client.get("/players", params={"players": "alp"}).status_code == 404  # no search endpoint
 
 
 def test_a_suggested_value_resolves(path):

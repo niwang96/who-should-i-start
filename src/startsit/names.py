@@ -36,6 +36,11 @@ class PlayerMatcher:
         for p in players:
             self._by_name[normalize_name(p["name"])].append(p)
 
+    @property
+    def players(self) -> list[PlayerRow]:
+        """Every player, by name then team (e.g. for a suggestions list)."""
+        return sorted((p for ps in self._by_name.values() for p in ps), key=lambda p: (p["name"], p["team"] or ""))
+
     def candidates(self, name: str, team: str | None = None) -> list[PlayerRow]:
         """Exact normalized-name matches, else names containing the query; only on `team`, if given."""
         query = normalize_name(name)

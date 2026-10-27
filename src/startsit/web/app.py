@@ -19,7 +19,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, cast
 
-from fastapi import Depends, FastAPI, Form, Query, Request
+from fastapi import Depends, FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -37,7 +37,6 @@ log = logging.getLogger("startsit.web")
 HERE = Path(__file__).parent
 MAX_PLAYERS = 4
 MAX_NAME_LENGTH = 60
-SUGGESTIONS = 8
 PLAYER_CACHE_SECONDS = 3600  # the players table changes once a day, with the ingest
 
 SOURCE_LABELS = {"llm": "AI pick", "cache": "AI pick", "baseline": "Baseline pick"}
@@ -132,8 +131,12 @@ def create_app(
     def page(request: Request, db: Database, **context: Any) -> HTMLResponse:
         context.setdefault("players", ["", ""])
         context.setdefault("scoring", "ppr")
+        # The whole player list ships with the page (~1,000 names), so the browser suggests names
+        # as you type without asking the server; nothing is requested until the button is pressed.
         return templates.TemplateResponse(
-            request, "index.html", {"info": week_info(db), "max_players": MAX_PLAYERS, **context}
+            request,
+            "index.html",
+            {"info": week_info(db), "max_players": MAX_PLAYERS, "rows": matcher(db).players, **context},
         )
 
     @app.get("/", response_class=HTMLResponse)
@@ -172,11 +175,6 @@ def create_app(
         except Exception:  # logging must never cost the user their answer
             log.exception("recording the recommendation failed")
         return {"packet": packet, "decision": decision, "names": packet.names}
-
-    @app.get("/players", response_class=HTMLResponse)
-    def suggest(request: Request, db: DB, q: Annotated[str, Query(alias="players")] = "") -> HTMLResponse:
-        rows = matcher(db).candidates(q[:MAX_NAME_LENGTH])[:SUGGESTIONS] if len(q.strip()) >= 2 else []
-        return templates.TemplateResponse(request, "_options.html", {"rows": rows})
 
     @app.get("/healthz")
     def health() -> JSONResponse:
