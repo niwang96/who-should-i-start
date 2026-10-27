@@ -31,7 +31,7 @@ import polars as pl
 
 from startsit import benchmark, evaluate
 from startsit.db import TABLES, Database
-from startsit.evidence import EASTERN, current_week
+from startsit.evidence import current_week
 from startsit.features import compute_usage_features
 from startsit.ingest import news, news_extract, nflverse, projections, rankings
 from startsit.llm import BudgetedLLM, GeminiProvider, LLMError
@@ -179,12 +179,13 @@ def run_benchmark(db: Database, season: int, now: datetime | None = None) -> int
 def run_backfill(db: Database, season: int, now: datetime | None = None) -> int:
     """Ask one past week's benchmark set as of its Sunday morning, when today's budget allows.
 
-    Not on Sundays (the budget is the live set's), and only with room for a whole set, so in
-    practice one week a day, newest first. The rankings scrape from before that Sunday is read
+    Not on Sundays (UTC, the day the budget resets on: Saturday 8pm to Sunday 8pm Eastern),
+    whose budget is the live set's, and only with room for a whole set, so in practice one week
+    a day, newest first. The rankings scrape from before that Sunday is read
     from the file's git history and archived, so the packets hold what was known then.
     """
     now = now or datetime.now(UTC)
-    if now.astimezone(EASTERN).weekday() == 6:
+    if now.astimezone(UTC).weekday() == 6:
         return 0
     target = benchmark.backfill_week(db, season, current_week(db, season), now)
     if target is None:

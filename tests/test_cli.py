@@ -322,6 +322,8 @@ def test_ingest_backfills_one_past_week_as_of_its_sunday_morning(tmp_path, monke
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     with Database(path) as db:
         assert ingest_main.run_backfill(db, 2026, sunday) == 0  # Sundays belong to the live set
+        saturday_night = datetime(2026, 11, 1, 0, 47, tzinfo=UTC)  # 8:47pm Eastern, but Sunday's budget
+        assert ingest_main.run_backfill(db, 2026, saturday_night) == 0
         snapshot["sha"] = None
         assert ingest_main.run_backfill(db, 2026, tuesday) == 0
         snapshot["sha"], week_of_file["week"] = "abc", 6

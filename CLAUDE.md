@@ -121,7 +121,7 @@ Many users will ask about the same players, so cache per-player results.
        - **Budgets:** `benchmark` 45/day (30 + retries); decide lowered to 390, so 390 + 60 + 45 = 495 of Gemini's 500.
        - **No peeking:** packets use only rankings and projections archived on or before the day asked (`through_day`); the consensus pick uses the same cutoff.
        - **Backfill** (`ingest.__main__.run_backfill`, tag `benchmark-backfill`, reported as its own group):
-         - Not on Sundays (the live set's budget). Needs room for a whole set in today's budget, so in practice one week a day, newest first, weeks 7 → 2.
+         - Not on Sundays in UTC (Saturday 8pm to Sunday 8pm Eastern; budgets reset at midnight UTC, so that day's budget is the live set's). Needs room for a whole set in today's budget, so in practice one week a day, newest first, weeks 7 → 2.
          - Asks as of that week's live time. It reads the rankings scrape from just before then from the file's git history (`rankings.snapshot_before` via the GitHub API with the workflow token, then `fetch_snapshot`) and archives it.
          - Week 1 can't be backfilled: its scrapes lack kickoff times, so the file's week can't be inferred (`BACKFILL_FROM_WEEK` = 2).
        - **Backfill caveats** (why it's reported apart from the live benchmark):
