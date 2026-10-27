@@ -6,7 +6,7 @@ where start/sit decisions are hard. They go through the normal decide path (vali
 cache, budget) and are logged as recommendations with visitor = "benchmark", which every
 report keeps apart from real users.
 
-Timing: a few hours before the Sunday main slate (the first Sunday kickoff at noon Eastern or
+Timing: three hours before the Sunday main slate (the first Sunday kickoff at noon Eastern or
 later), when most news is in, like a user setting a lineup on Sunday morning. Players whose
 game has already kicked off (Thursday, or a morning international game) are left out.
 """
@@ -32,13 +32,14 @@ BENCHMARK_DAILY_LLM_BUDGET = 45
 # Matchups per position, and the position rank where pairs start (1-based): borderline starters.
 PAIRS = {"QB": 4, "RB": 9, "WR": 12, "TE": 5}
 WINDOW_START = {"QB": 10, "RB": 15, "WR": 20, "TE": 6}
-LEAD_TIME = timedelta(hours=4)  # before the Sunday main slate
+LEAD_TIME = timedelta(hours=3)  # before the Sunday main slate: 10am Eastern for the 1pm games
 MAIN_SLATE_HOUR = 12  # Eastern; earlier Sunday kickoffs are international morning games
 # The backfill's first week: 2026 week 1 rankings scrapes have no kickoff times, so their week
 # can't be told (startsit.ingest.rankings.build_rankings).
 BACKFILL_FROM_WEEK = 2
-# Seconds between AI calls, leaving most of the shared 12/minute for real users.
-CALL_SPACING = 10.0
+# Seconds between AI calls: at most 4 of the shared 12/minute, leaving the rest for real users
+# on Sunday mornings, their busiest time (~8 minutes for a set).
+CALL_SPACING = 15.0
 
 Matchup = tuple[str, str, Scoring]
 

@@ -117,7 +117,7 @@ Many users will ask about the same players, so cache per-player results.
        - The report (`python -m startsit.evaluate`) compares AI, baseline and consensus on the AI-answered matchups, and adds AI overrides, confidence buckets and baseline/consensus over all matchups.
        - The daily stats refresh scores new results.
        - `startsit/benchmark.py`: 30 pairs a week (QB 4, RB 9, WR 12, TE 5; raised from 20 on Oct 27) of ECR neighbors starting at QB10/RB15/WR20/TE6. Who's listed first alternates, and the scoring formats cycle.
-       - **Live set:** asked by news runs in the window 4 h before the first Sunday kickoff at noon ET or later (morning international games don't count), skipping players whose game has started, 10 s between AI calls. A window missed entirely is left to the backfill.
+       - **Live set:** asked by news runs in the window 3 h before the first Sunday kickoff at noon ET or later (10am–1pm ET for the usual 1pm slate; morning international games don't count), skipping players whose game has started, 15 s between AI calls (≤4 of the shared 12/minute, ~8 minutes a set). Moved from 9am and 10 s on Oct 27 to catch more Sunday-morning news and leave room for users. A window missed entirely is left to the backfill.
        - **Budgets:** `benchmark` 45/day (30 + retries); decide lowered to 390, so 390 + 60 + 45 = 495 of Gemini's 500.
        - **No peeking:** packets use only rankings and projections archived on or before the day asked (`through_day`); the consensus pick uses the same cutoff.
        - **Backfill** (`ingest.__main__.run_backfill`, tag `benchmark-backfill`, reported as its own group):

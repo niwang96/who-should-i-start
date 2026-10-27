@@ -19,7 +19,7 @@ ANSWER = {
     "baseline_disagreement": "The consensus edge outweighs the rest [E1].",
 }
 SATURDAY = datetime(2026, 10, 31, 18, 0, tzinfo=UTC)
-SUNDAY_MORNING = datetime(2026, 11, 1, 14, 0, tzinfo=UTC)  # 9am Eastern (EST from Nov 1)
+SUNDAY_MORNING = datetime(2026, 11, 1, 15, 0, tzinfo=UTC)  # 10am Eastern (EST from Nov 1)
 SUNDAY_KICKOFF = datetime(2026, 11, 1, 18, 0, tzinfo=UTC)
 MONDAY = datetime(2026, 11, 2, 15, 0, tzinfo=UTC)
 TEAMS = ["PHI", "DAL", "NYJ", "MIA", "GB", "NYG"]
@@ -50,8 +50,8 @@ def week8(db, monkeypatch):
     return db
 
 
-def test_benchmark_is_due_four_hours_before_the_first_sunday_kickoff(week8):
-    assert benchmark.benchmark_time(week8.week_games(2026, 8)) == datetime(2026, 11, 1, 14, 0, tzinfo=UTC)
+def test_benchmark_is_due_three_hours_before_the_first_sunday_kickoff(week8):
+    assert benchmark.benchmark_time(week8.week_games(2026, 8)) == SUNDAY_MORNING
     assert not benchmark.due(week8, 2026, 8, SATURDAY)
     assert benchmark.due(week8, 2026, 8, SUNDAY_MORNING)
     assert not benchmark.due(week8, 2026, 8, SUNDAY_KICKOFF)  # window over: left to the backfill
@@ -60,12 +60,12 @@ def test_benchmark_is_due_four_hours_before_the_first_sunday_kickoff(week8):
 
 def test_benchmark_time_ignores_a_sunday_morning_international_game(week8):
     games = [*week8.week_games(2026, 8), game(8, "JAX", "LV", gameday="2026-11-01", gametime="09:30")]
-    assert benchmark.benchmark_time(games) == datetime(2026, 11, 1, 14, 0, tzinfo=UTC)
+    assert benchmark.benchmark_time(games) == SUNDAY_MORNING
 
 
 def test_benchmark_time_without_sunday_games():
     games = [game(18, "PHI", "DAL", gameday="2027-01-09", gametime="16:30")]  # a Saturday
-    assert benchmark.benchmark_time(games) == datetime(2027, 1, 9, 17, 30, tzinfo=UTC)
+    assert benchmark.benchmark_time(games) == datetime(2027, 1, 9, 18, 30, tzinfo=UTC)
     assert benchmark.benchmark_time([game(18, "PHI", "DAL")]) is None
 
 
@@ -100,7 +100,7 @@ def test_run_stops_when_the_budget_is_spent(week8):
 
 def test_backfill_picks_the_newest_week_whose_window_passed_without_a_set(week8):
     week8.upsert("games", [game(7, "PHI", "DAL", gameday="2026-10-25", gametime="13:00")])
-    assert benchmark.backfill_week(week8, 2026, 8, SUNDAY_MORNING) == (7, datetime(2026, 10, 25, 13, 0, tzinfo=UTC))
+    assert benchmark.backfill_week(week8, 2026, 8, SUNDAY_MORNING) == (7, datetime(2026, 10, 25, 14, 0, tzinfo=UTC))
     assert benchmark.backfill_week(week8, 2026, 8, MONDAY) == (8, SUNDAY_MORNING)
     week8.upsert("games", [game(1, "PHI", "DAL", gameday="2026-09-13", gametime="13:00")])
     week8.execute("DELETE FROM games WHERE week IN (7, 8)")
@@ -114,5 +114,5 @@ def test_a_backfilled_set_is_asked_and_logged_as_of_the_past(week8):
     )
     assert n == 3
     rows = week8.query("SELECT DISTINCT visitor, created_at FROM recommendations")
-    assert rows == [{"visitor": BACKFILL, "created_at": "2026-11-01T14:00:00+00:00"}]
+    assert rows == [{"visitor": BACKFILL, "created_at": "2026-11-01T15:00:00+00:00"}]
     assert benchmark.done(week8, 2026, 8) and benchmark.backfill_week(week8, 2026, 8, MONDAY) is None
