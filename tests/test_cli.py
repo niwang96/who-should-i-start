@@ -242,3 +242,31 @@ def test_a_news_run_does_the_daily_refresh_when_it_is_due(tmp_path, monkeypatch,
     assert "daily stats refresh is due; running it first" in caplog.text
     with Database(path) as db:
         assert db.latest_stats_run() is not None and db.query("select count(*) as n from player_weeks")[0]["n"] == 1
+
+
+def test_ingest_runs_the_benchmark_only_when_due_and_with_a_key(tmp_path, monkeypatch, caplog):
+    from datetime import UTC, datetime
+
+    path = seed(tmp_path / "b.db")  # week 7, first Sunday kickoff Oct 25 1pm Eastern (17:00 UTC)
+    calls = []
+    monkeypatch.setattr(ingest_main.benchmark, "run", lambda db, llm, season, week: calls.append(week) or 3)
+    with Database(path) as db:
+        assert ingest_main.run_benchmark(db, 2026, datetime(2026, 10, 25, 12, 0, tzinfo=UTC)) == 0  # not yet
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        assert ingest_main.run_benchmark(db, 2026, datetime(2026, 10, 25, 13, 30, tzinfo=UTC)) == 0
+        assert "benchmark skipped: GEMINI_API_KEY is not set" in caplog.text
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        assert ingest_main.run_benchmark(db, 2026, datetime(2026, 10, 25, 13, 30, tzinfo=UTC)) == 3
+    assert calls == [7]
+
+
+def test_the_daily_refresh_scores_finished_recommendations(tmp_path, monkeypatch, caplog):
+    path = str(tmp_path / "i.db")
+    raw = make_raw(stats=[stat_row("G1", 1)], snaps=[snap("P1", 1, 0.8)])
+    monkeypatch.setattr(ingest_main.nflverse, "fetch", lambda season: raw)
+    monkeypatch.setattr(ingest_main.rankings, "fetch", lambda: rankings_raw([rank_row("19222", "Wide Out")]))
+    monkeypatch.delenv("FANTASYPROS_API_KEY", raising=False)
+    caplog.set_level("INFO")
+    with Database(path) as db:
+        ingest_main.run_stats(db, 2026)
+    assert "evaluation: 0 recommendations scored" in caplog.text

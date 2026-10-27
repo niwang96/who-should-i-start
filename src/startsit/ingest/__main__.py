@@ -5,11 +5,16 @@ and a missed cron run heals itself on the next one. Rankings are the exception: 
 file only holds the latest scrape, so each run archives the one it sees. With
 FANTASYPROS_API_KEY set it also archives FantasyPros projections (~26 API calls).
 
+After each stats refresh, recommendations whose games are all in the data are scored against
+actual points (step 6a, startsit.evaluate).
+
 news: stores new RSS items, extracts player facts from items not yet processed (batched
 LLM calls within a daily budget; skipped without GEMINI_API_KEY), and re-checks the
 rankings file so each update is archived within the hour. It also runs the daily stats
 refresh when that's due (none since the latest 10:00 UTC), so the daily data arrives even
-when GitHub drops the scheduled run meant for it; every scheduled run uses this mode.
+when GitHub drops the scheduled run meant for it; every scheduled run uses this mode. Once
+a week, a few hours before the first Sunday kickoff, it asks the AI the weekly benchmark
+matchups (startsit.benchmark).
 
 news-fetch: stores new RSS items only (no LLM), for frequent polling of feeds that only
 list their latest few items, by hand; the next news run extracts them.
@@ -24,7 +29,9 @@ from datetime import UTC, date, datetime, time, timedelta
 
 import polars as pl
 
+from startsit import benchmark, evaluate
 from startsit.db import TABLES, Database
+from startsit.evidence import current_week
 from startsit.features import compute_usage_features
 from startsit.ingest import news, news_extract, nflverse, projections, rankings
 from startsit.llm import BudgetedLLM, GeminiProvider, LLMError
@@ -143,6 +150,26 @@ def run_stats(db: Database, season: int) -> None:
         _optional("projections", lambda: run_projections(db, client, season))
     else:
         log.warning("FANTASYPROS_API_KEY not set; projections skipped")
+    _optional("evaluation", lambda: run_evaluation(db))
+
+
+def run_evaluation(db: Database) -> int:
+    n = evaluate.score_pending(db)
+    log.info("evaluation: %s recommendations scored", n)
+    return n
+
+
+def run_benchmark(db: Database, season: int, now: datetime | None = None) -> int:
+    """The weekly benchmark matchups, when they're due and the AI is available."""
+    week = current_week(db, season)
+    if not benchmark.due(db, season, week, now or datetime.now(UTC)):
+        return 0
+    try:
+        llm = BudgetedLLM(GeminiProvider(), db, "benchmark", benchmark.BENCHMARK_DAILY_LLM_BUDGET)
+    except LLMError as e:
+        log.warning("benchmark skipped: %s", e)
+        return 0
+    return benchmark.run(db, llm, season, week)
 
 
 def _optional(step: str, fn: Callable[[], object]) -> None:
@@ -191,6 +218,8 @@ def main() -> None:
                 log.warning("news extraction disabled: %s", e)
                 llm = None
             run_news(db, news.fetch_all(), llm, args.season)
+        if args.only == "news":
+            _optional("benchmark", lambda: run_benchmark(db, args.season))
 
 
 if __name__ == "__main__":
