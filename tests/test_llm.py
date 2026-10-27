@@ -186,3 +186,21 @@ def test_gemini_turns_any_transport_or_decoding_failure_into_an_llm_error(monkey
     monkeypatch.setattr(llm.urllib.request, "urlopen", urlopen)
     with pytest.raises(llm.LLMError, match="Gemini request failed"):
         llm.GeminiProvider(api_key="k").generate_json("p", {})
+
+
+@pytest.mark.parametrize(
+    "address,network",
+    [
+        ("203.0.113.7", "203.0.113.7"),
+        ("2001:db8:aaaa:bbbb:1:2:3:4", "2001:db8:aaaa:bbbb::/64"),
+        ("2001:db8:aaaa:bbbb::ffff", "2001:db8:aaaa:bbbb::/64"),  # same /64: same visitor
+        ("unknown", "unknown"),
+    ],
+)
+def test_visitors_are_counted_per_ipv4_address_and_per_ipv6_64(address, network):
+    assert llm.visitor_network(address) == network
+
+
+def test_one_ipv6_network_is_one_visitor():
+    assert llm.visitor_id("2001:db8:aaaa:bbbb::1", "s") == llm.visitor_id("2001:db8:aaaa:bbbb::2", "s")
+    assert llm.visitor_id("2001:db8:aaaa:bbbb::1", "s") != llm.visitor_id("2001:db8:aaaa:cccc::1", "s")

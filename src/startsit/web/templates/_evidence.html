@@ -15,7 +15,7 @@
     <div class="cell{% if decision and p.player_id == decision.pick %} picked{% endif %}">
       <span class="who">{{ p.name }}</span>
       {% for item in p.items_of(kind) %}
-      <p id="{{ item.id }}"><span class="id">{{ item.id }}</span> {{ item.text }}{% if item.source_url %} <a class="src" href="{{ item.source_url }}" rel="noopener nofollow" target="_blank">source</a>{% endif %}</p>
+      <p id="{{ item.id }}"><span class="id">{{ item.id }}</span> {{ item.text }}{% set href = item.source_url | safe_href %}{% if href %} <a class="src" href="{{ href }}" rel="noopener nofollow" target="_blank">source</a>{% endif %}</p>
       {% else %}
       <p class="none">—</p>
       {% endfor %}

@@ -32,7 +32,9 @@ from startsit.db import (
     RankingRow,
     RosterRow,
     UsageRow,
+    utc_day,
     utc_iso,
+    utc_now,
 )
 from startsit.names import PlayerMatcher
 from startsit.scoring import LABELS, SCORINGS, Scoring, column, reception_discount
@@ -52,7 +54,7 @@ class Question:
     season: int
     week: int
     scoring: Scoring
-    as_of: datetime = field(default_factory=lambda: datetime.now(UTC))  # news cutoff: nothing after this
+    as_of: datetime = field(default_factory=utc_now)  # news cutoff: nothing after this
 
     @property
     def label(self) -> str:
@@ -248,7 +250,7 @@ def load_context(db: Database, player_id: str, q: Question) -> PlayerContext:
         elif team is not None:
             missed = db.team_games(q.season, team, after, through)
     since, until = utc_iso(q.as_of - NEWS_LOOKBACK), utc_iso(q.as_of)
-    asked_on = until[:10]  # rankings and projections archived on or before the day asked
+    asked_on = utc_day(q.as_of)  # rankings and projections archived on or before the day asked
     news = db.news_for_player(player_id, since, until, NEWS_PER_PLAYER)
     # A status only counts for this week if it came after the team's previous game ended, so
     # last week's "ruled out" or an in-game "won't return" doesn't carry over.

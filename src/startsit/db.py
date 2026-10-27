@@ -139,6 +139,16 @@ class RankingRow(TypedDict):
     source_url: str | None
 
 
+def utc_now() -> datetime:
+    """The default clock (injectable everywhere a test needs a fixed time)."""
+    return datetime.now(UTC)
+
+
+def utc_day(dt: datetime) -> str:
+    """The UTC date as YYYY-MM-DD: the format of the archive dates (rankings scrape_date, projections fetched_date)."""
+    return dt.astimezone(UTC).date().isoformat()
+
+
 def utc_iso(dt: datetime) -> str:
     """The timestamp format news rows use: ISO 8601 in UTC to the second, so string order is time order."""
     return dt.astimezone(UTC).isoformat(timespec="seconds")
@@ -338,6 +348,15 @@ SCHEMA = "\n\n".join([*(t.ddl() for t in TABLES.values()), INGEST_RUNS_DDL, LLM_
 ALL_TABLE_NAMES = (*TABLES, "ingest_runs", "llm_calls")
 
 
+# `through_day` when there's no cutoff: later than any YYYY-MM-DD date.
+NO_CUTOFF = "9999-12-31"
+
+
+def _placeholders(values: Sequence[Any]) -> str:
+    """'?, ?, ?' for an IN (...) list of these values."""
+    return ", ".join("?" for _ in values)
+
+
 # A games row (alias g) involving a team; the placeholder is the team expression.
 _PLAYS = "(g.home_team = {0} OR g.away_team = {0})"
 
@@ -448,6 +467,9 @@ class Database:
     def _one(self, sql: str, params: Sequence[Any]) -> dict[str, Any] | None:
         rows = self.query(sql, params)
         return rows[0] if rows else None
+
+    def _exists(self, table: str, where: str, params: Sequence[Any]) -> bool:
+        return self._one(f"SELECT 1 AS x FROM {table} WHERE {where} LIMIT 1", params) is not None
 
     def _scalar(self, sql: str, params: Sequence[Any] = ()) -> Any:
         row = self._one(sql, params)
@@ -583,7 +605,7 @@ class Database:
         return self._one(
             f"SELECT * FROM {table} WHERE player_id = ? AND season = ? AND week = ? AND {date_column} <= ? "
             f"ORDER BY {date_column} DESC LIMIT 1",
-            (player_id, season, week, through_day or "9999-12-31"),
+            (player_id, season, week, through_day or NO_CUTOFF),
         )
 
     def latest_ranking(
@@ -595,7 +617,7 @@ class Database:
 
     def rankings_for_week(self, season: int, week: int, through_day: str | None = None) -> list[RankingRow]:
         """Every player's ranking from the latest scrape of the week (on or before `through_day`)."""
-        day = through_day or "9999-12-31"
+        day = through_day or NO_CUTOFF
         return cast(
             "list[RankingRow]",
             self.query(
@@ -648,7 +670,7 @@ class Database:
         )
 
     def week_has_games(self, season: int, week: int) -> bool:
-        return self._one("SELECT 1 AS x FROM games WHERE season = ? AND week = ? LIMIT 1", (season, week)) is not None
+        return self._exists("games", "season = ? AND week = ?", (season, week))
 
     def team_games(self, season: int, team: str, after_week: int, through_week: int) -> int:
         """Games `team` played (or plays) in weeks after_week+1 .. through_week."""
@@ -679,21 +701,18 @@ class Database:
 
     def questions_asked(self, season: int, week: int, visitors: Sequence[str]) -> list[dict[str, Any]]:
         """The player ids (JSON) and scoring of each recommendation logged for these visitors that week."""
-        marks = ", ".join("?" for _ in visitors)
         return self.query(
-            f"SELECT player_ids, scoring FROM recommendations WHERE season = ? AND week = ? AND visitor IN ({marks})",
+            "SELECT player_ids, scoring FROM recommendations WHERE season = ? AND week = ? "
+            f"AND visitor IN ({_placeholders(visitors)})",
             (season, week, *visitors),
         )
 
     def has_run(self, sources: Sequence[str], season: int, week: int) -> bool:
         """Whether `ingest_runs` records any of these sources for that week."""
-        marks = ", ".join("?" for _ in sources)
-        return (
-            self._one(
-                f"SELECT 1 AS x FROM ingest_runs WHERE source IN ({marks}) AND season = ? AND max_week = ? LIMIT 1",
-                (*sources, season, week),
-            )
-            is not None
+        return self._exists(
+            "ingest_runs",
+            f"source IN ({_placeholders(sources)}) AND season = ? AND max_week = ?",
+            (*sources, season, week),
         )
 
     def cached_decision(self, cache_key: str) -> DecisionCacheRow | None:
@@ -711,13 +730,7 @@ class Database:
 
     def team_has_stats(self, season: int, week: int, team: str) -> bool:
         """Whether any player's stats for `team` in `week` are loaded (so its game is in the data)."""
-        return (
-            self._one(
-                "SELECT 1 AS x FROM player_weeks WHERE season = ? AND week = ? AND team = ? LIMIT 1",
-                (season, week, team),
-            )
-            is not None
-        )
+        return self._exists("player_weeks", "season = ? AND week = ? AND team = ?", (season, week, team))
 
     def unscored_recommendations(self) -> list[RecommendationRow]:
         return cast(
