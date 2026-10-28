@@ -406,3 +406,11 @@ def test_a_past_question_sees_only_rankings_and_projections_from_then(seeded):
     assert then.players[0].score.points == 19.5 and now.players[0].score.points == 10.0
     assert "rankings as of 2026-10-23" in then.to_text() and "rankings as of 2026-10-25" in now.to_text()
     assert "expected catches/game from recent usage" in then.to_text()
+
+
+def test_a_stored_packet_reads_back_exactly(seeded):
+    from startsit.evidence import EvidencePacket
+
+    packet = build_packet(seeded, ["NACUA", "SMITH"], "half", 2026, 7, as_of=datetime(2026, 10, 24, tzinfo=UTC))
+    again = EvidencePacket.from_json(packet.to_json())
+    assert again == packet and again.to_text() == packet.to_text()

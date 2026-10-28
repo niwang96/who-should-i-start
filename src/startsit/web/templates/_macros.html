@@ -1,0 +1,12 @@
+{# Shared by the track record pages. #}
+{% macro pct(rate) -%}
+{% if rate.pct is not none %}{{ "%.0f"|format(rate.pct * 100) }}%{% else %}–{% endif %}
+{%- endmacro %}
+
+{% macro of(rate) -%}
+{% if rate.decided %}{{ rate.hits }} of {{ rate.decided }}{% else %}no results yet{% endif %}
+{%- endmacro %}
+
+{% macro verdict(hit) -%}
+<span class="badge {{ 'hit' if hit == 1 else 'miss' if hit == 0 else 'push' }}">{{ "Right" if hit == 1 else "Wrong" if hit == 0 else "Tie" }}</span>
+{%- endmacro %}

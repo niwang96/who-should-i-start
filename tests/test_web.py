@@ -273,3 +273,31 @@ def test_cross_site_posts_are_refused(path):
 
 def test_only_the_first_few_form_fields_are_read():
     assert web.clean_names([" ", "Alpha Back", *["x"] * 10_000]) == ["Alpha Back", "x", "x"]
+
+
+def test_why_page_shows_the_stored_answer_its_evidence_and_what_happened(path):
+    client = client_for(path, FakeProvider(responses=[ANSWER]))
+    ask(client, "Alpha Back", "Bravo Back", hx=True)
+    with Database(path) as db:
+        [rec] = db.query("SELECT rec_id FROM recommendations")
+        rec_id = rec["rec_id"]
+        r = client.get(f"/record/{rec_id}")
+        assert r.status_code == 200 and "Alpha Back vs Bravo Back" in r.text
+        assert "Not scored yet" in r.text and "asked Sat Oct 24, 2:00 PM ET" in r.text
+        assert "Start <strong>Alpha Back</strong>" in r.text and 'id="E2"' in r.text  # the answer and evidence
+        assert "Questions asked on this site" in r.text
+
+        db.upsert("player_weeks", [_week("A", 7, 20.0), _week("B", 7, 12.0, team="DAL")])
+        evaluate.score_pending(db)
+    scored = client.get(f"/record/{rec_id}").text
+    assert "What happened" in scored and "scored more" in scored and "20.0" in scored
+    assert scored.count('class="badge hit"') >= 2  # the AI and the baseline were right
+    record = client_for(path).get("/record").text
+    assert f'href="/record/{rec_id}"' in record and "All 1 matchups" in record
+
+
+@pytest.mark.parametrize("rec_id", ["0" * 32, "not-an-id"])
+def test_why_page_for_an_unknown_matchup(path, rec_id):
+    r = client_for(path).get(f"/record/{rec_id}")
+    assert r.status_code == 404 and "That matchup isn't in the track record." in r.text
+    assert client_for(path).get("/record/../etc").status_code == 404  # never reaches the route

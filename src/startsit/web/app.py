@@ -11,6 +11,7 @@ Run locally: uvicorn startsit.web.app:app --reload  (uses $DATABASE_URL or the S
 
 # No `from __future__ import annotations` here: FastAPI reads the endpoint annotations at
 # runtime, including the `DB` alias defined inside create_app.
+import json
 import logging
 import os
 import re
@@ -31,8 +32,15 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 
 from startsit.db import Database, utc_now
 from startsit.decide import HIGH_MARGIN, MEDIUM_MARGIN, Decision, decide, decide_llm, record_recommendation
-from startsit.evaluate import CONFIDENCES, Report, build_report
-from startsit.evidence import EvidencePacket, PlayerLookupError, current_week, eastern_time, packet_for_names
+from startsit.evaluate import CONFIDENCES, Report, build_report, group_of
+from startsit.evidence import (
+    EASTERN,
+    EvidencePacket,
+    PlayerLookupError,
+    current_week,
+    eastern_time,
+    packet_for_names,
+)
 from startsit.llm import BudgetedLLM, visitor_id
 from startsit.names import PlayerMatcher
 from startsit.scoring import LABELS, SCORINGS, Scoring
@@ -44,6 +52,7 @@ HERE = Path(__file__).parent
 MAX_PLAYERS = 2  # the page compares two players (the engine takes more)
 MAX_NAME_LENGTH = 60
 PLAYER_CACHE_SECONDS = 3600  # the players table changes once a day, with the ingest
+REC_ID = re.compile(r"[0-9a-f]{32}")  # recommendation ids are uuid4 hex
 RECORD_CACHE_SECONDS = 3600  # results change once a day, when the stats refresh scores the new games
 
 # The track record page's groups, in the order shown (keys from startsit.evaluate.group_of).
@@ -109,6 +118,12 @@ def game_day(day: str) -> str:
 
 
 _CITATION = re.compile(r"\[?\b(E\d+)\b\]?")
+
+
+def eastern_datetime(dt: datetime) -> str:
+    """'Sun Oct 25, 10:00 AM ET'."""
+    local = dt.astimezone(EASTERN)
+    return f"{local:%a %b} {local.day}, {local.hour % 12 or 12}:{local:%M %p} ET"
 
 
 def link_citations(text: str, known_ids: set[str]) -> Markup:
@@ -279,6 +294,26 @@ def create_app(
         return templates.TemplateResponse(
             request, "record.html", {"info": week_info(db), "report": report, "groups": RECORD_GROUPS}
         )
+
+    @app.get("/record/{rec_id}", response_class=HTMLResponse)
+    def why(request: Request, db: DB, rec_id: str) -> HTMLResponse:
+        """One matchup from the track record: the answer and evidence as shown, and what happened."""
+        rec = db.recommendation(rec_id) if REC_ID.fullmatch(rec_id) else None
+        context: dict[str, Any] = {"info": week_info(db)}
+        if rec is None:
+            return templates.TemplateResponse(request, "why.html", context, status_code=404)
+        packet = EvidencePacket.from_json(rec["packet_json"])
+        evaluation = db.evaluation(rec_id)
+        group = group_of(cast("dict[str, Any]", rec))
+        context |= {
+            "packet": packet,
+            "decision": Decision.from_json(rec["decision_json"]),
+            "names": packet.names,
+            "group_title": next(g["title"] for g in RECORD_GROUPS if g["key"] == group),
+            "asked_at": eastern_datetime(packet.question.as_of),
+            "outcome": evaluation and {**evaluation, "points": json.loads(evaluation["points_json"])},
+        }
+        return templates.TemplateResponse(request, "why.html", context)
 
     @app.get("/healthz")
     def health() -> JSONResponse:

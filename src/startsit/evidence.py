@@ -165,6 +165,28 @@ class EvidencePacket:
         """The whole packet (question, scores, evidence items with ids and links), for the record."""
         return json.dumps(asdict(self), default=lambda o: o.isoformat() if isinstance(o, datetime) else str(o))
 
+    @classmethod
+    def from_json(cls, text: str) -> EvidencePacket:
+        """A packet stored by `to_json` (with a recommendation), to show it again exactly as it was."""
+        data = json.loads(text)
+        q = data["question"]
+        players = [
+            PlayerEvidence(
+                player_id=p["player_id"],
+                name=p["name"],
+                position=p["position"],
+                team=p["team"],
+                score=baseline.BaselineScore(**p["score"]),
+                items=[EvidenceItem(**i) for i in p["items"]],
+                game_status=p.get("game_status"),
+                kickoff=datetime.fromisoformat(p["kickoff"]) if p.get("kickoff") else None,
+                game_started=p.get("game_started", False),
+            )
+            for p in data["players"]
+        ]
+        question = Question(q["season"], q["week"], q["scoring"], datetime.fromisoformat(q["as_of"]))
+        return cls(question, players, data["baseline_pick"], data["baseline_margin"])
+
     def to_text(self) -> str:
         q = self.question
         lines = [f"Week {q.week} {q.season}, {q.label} scoring. {self.verdict()}."]

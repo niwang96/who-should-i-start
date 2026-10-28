@@ -1,0 +1,48 @@
+{% extends "_layout.html" %}
+{% from "_macros.html" import verdict %}
+
+{% block title %}{% if packet %}Why {{ names[decision.pick] }}? — {% endif %}Track record — Who Should I Start?{% endblock %}
+{% block description %}Why the AI picked one player over another: its reasoning, the evidence it saw, and what actually happened.{% endblock %}
+{% block nav %}<a href="/record">Track record</a>{% endblock %}
+
+{% block main %}
+{% if not packet %}
+<div class="error" role="alert">That matchup isn't in the track record.</div>
+<p><a href="/record">Back to the track record</a></p>
+{% else %}
+<section class="why-page">
+  <p class="crumbs"><a href="/record">← Track record</a></p>
+  <h2>{{ packet.players | map(attribute="name") | join(" vs ") }}</h2>
+  <p class="meta">Week {{ packet.question.week }}, {{ packet.question.season }} · {{ scoring_labels[packet.question.scoring] }}
+    · {{ group_title }} · asked {{ asked_at }}</p>
+
+  {% if outcome %}
+  <article class="card outcome">
+    <h3>What happened</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th scope="col">Player</th><th scope="col">{{ scoring_labels[packet.question.scoring] }} points</th></tr></thead>
+        <tbody>
+          {% for p in packet.players %}
+          <tr><th scope="row">{{ p.name }}{% if p.player_id == outcome.top_scorer %} <span class="muted">· scored more</span>{% endif %}</th>
+            <td>{{ "%.1f"|format(outcome.points[p.player_id]) }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p class="picks">
+      {% if decision.source != "baseline" %}<span>AI: {{ verdict(outcome.pick_hit) }} {{ names[decision.pick] }}</span>{% endif %}
+      <span>Expert consensus: {% if outcome.consensus_pick %}{{ verdict(outcome.consensus_hit) }} {{ names[outcome.consensus_pick] }}{% else %}<span class="muted">no pick</span>{% endif %}</span>
+      <span>Baseline: {{ verdict(outcome.baseline_hit) }} {{ names[decision.baseline_pick] }}</span>
+    </p>
+  </article>
+  {% else %}
+  <p class="note">Not scored yet: the result appears once these players' games are in the stats.</p>
+  {% endif %}
+
+  <h3 class="saw">What the AI said, and the evidence it saw</h3>
+  <p class="meta">Exactly as shown when the question was asked. The AI may only use these facts, and cites them by id.</p>
+  {% include "_result.html" %}
+</section>
+{% endif %}
+{% endblock %}
