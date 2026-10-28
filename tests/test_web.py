@@ -330,3 +330,16 @@ def test_no_crowd_note_when_the_crowd_agrees_or_has_no_lean(path):
         db.upsert("crowd_votes", [vote(f"c{i}", "A", "start", "2026-10-22T12:00:00+00:00") for i in range(3)])
     r = ask(client_for(path), "Alpha Back", "Bravo Back", hx=True)
     assert "crowd-note" not in r.text and "3 start / 0 sit" in r.text  # the evidence still shows the votes
+
+
+def test_the_tab_icon_is_linked_and_served(path):
+    client = client_for(path)
+    page = client.get("/").text
+    for name, kind in (
+        ("favicon.svg", "image/svg+xml"),
+        ("favicon-32.png", "image/png"),
+        ("apple-touch-icon.png", "image/png"),
+    ):
+        assert f"/static/{name}" in page
+        r = client.get(f"/static/{name}")
+        assert r.status_code == 200 and r.headers["content-type"].startswith(kind)
