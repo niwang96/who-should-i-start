@@ -53,6 +53,10 @@ MAX_PLAYERS = 2  # the page compares two players (the engine takes more)
 MAX_NAME_LENGTH = 60
 PLAYER_CACHE_SECONDS = 3600  # the players table changes once a day, with the ingest
 REC_ID = re.compile(r"[0-9a-f]{32}")  # recommendation ids are uuid4 hex
+# Seconds the AI gets to answer. Vercel ends a request after 30 s (maxDuration in vercel.json),
+# and the page would then show nothing, so the AI's share leaves room for a cold start, the
+# database work and logging the answer. Past it, the expert-consensus pick is shown instead.
+AI_ANSWER_SECONDS = 20.0
 RECORD_CACHE_SECONDS = 3600  # results change once a day, when the stats refresh scores the new games
 
 # The track record page's groups, in the order shown (keys from startsit.evaluate.group_of).
@@ -294,7 +298,7 @@ def create_app(
             # A player whose game has kicked off is locked in or out of the lineup in most leagues, so
             # there's no choice left: no AI call, and nothing logged for the evaluation.
             return {"packet": packet, "locked": started, "names": packet.names, "info": info}
-        decision: Decision = decide(db, packet, llm_factory(db, visitor))
+        decision: Decision = decide(db, packet, llm_factory(db, visitor), deadline=AI_ANSWER_SECONDS)
         try:
             record_recommendation(db, packet, decision, visitor)
         except Exception:  # logging must never cost the user their answer

@@ -343,3 +343,9 @@ def test_the_tab_icon_is_linked_and_served(path):
         assert f"/static/{name}" in page
         r = client.get(f"/static/{name}")
         assert r.status_code == 200 and r.headers["content-type"].startswith(kind)
+
+
+def test_the_ai_gets_a_time_limit_inside_the_hosts(path):
+    provider = FakeProvider(responses=[ANSWER])
+    ask(client_for(path, provider), "Alpha Back", "Bravo Back", hx=True)
+    assert 0 < provider.timeouts[0] <= web.AI_ANSWER_SECONDS < 30  # Vercel's maxDuration

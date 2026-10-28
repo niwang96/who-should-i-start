@@ -63,11 +63,20 @@ class VisitorLimited(LLMError):
     """This visitor has used their allowance of AI calls for now."""
 
 
+class TimedOut(LLMError):
+    """The provider didn't answer within the time allowed."""
+
+
 class LLMProvider(Protocol):
     model: str
 
-    def generate_json(self, prompt: str, schema: dict[str, Any], system: str | None = None) -> Any:
-        """Return the parsed JSON response, which must match `schema` (an OpenAPI-style schema)."""
+    def generate_json(
+        self, prompt: str, schema: dict[str, Any], system: str | None = None, timeout: float | None = None
+    ) -> Any:
+        """Return the parsed JSON response, which must match `schema` (an OpenAPI-style schema).
+
+        `timeout` (seconds, default the provider's own) bounds the whole call, retries included.
+        """
         ...
 
 
@@ -83,17 +92,21 @@ class GeminiProvider:
         self.model = model or os.environ.get("GEMINI_MODEL") or DEFAULT_MODEL
         self.timeout = timeout
 
-    def _post(self, req: urllib.request.Request, retries: int) -> Any:
+    def _post(self, req: urllib.request.Request, retries: int, deadline: float) -> Any:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimedOut("Gemini didn't answer in time")
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with urllib.request.urlopen(req, timeout=remaining) as resp:
                 return json.load(resp)
         except urllib.error.HTTPError as e:
             # The error body can be long; keep a short excerpt. It never contains the key.
             body = e.read().decode(errors="replace")
             detail = body[:300]
-            if e.code in self.RETRY_STATUSES and retries > 0:
+            room = deadline - time.monotonic() > 2 * self.RETRY_DELAY_SECONDS  # time to wait and ask again
+            if e.code in self.RETRY_STATUSES and retries > 0 and room:
                 time.sleep(self.RETRY_DELAY_SECONDS)
-                return self._post(req, retries - 1)
+                return self._post(req, retries - 1, deadline)
             if e.code == 429:
                 # The body names the quota that ran out, e.g. "...RequestsPerDayPerProjectPerModel...".
                 if "PerDay" in body:
@@ -103,9 +116,13 @@ class GeminiProvider:
         except (OSError, ValueError) as e:
             # URLError, timeouts and dropped connections are OSErrors; a body that isn't JSON is a
             # ValueError. Callers catch LLMError, so nothing else may escape.
+            if isinstance(e, TimeoutError) or isinstance(getattr(e, "reason", None), TimeoutError):
+                raise TimedOut("Gemini didn't answer in time") from e
             raise LLMError(f"Gemini request failed: {e}") from e
 
-    def generate_json(self, prompt: str, schema: dict[str, Any], system: str | None = None) -> Any:
+    def generate_json(
+        self, prompt: str, schema: dict[str, Any], system: str | None = None, timeout: float | None = None
+    ) -> Any:
         body: dict[str, Any] = {
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
             "generationConfig": {"responseMimeType": "application/json", "responseSchema": schema, "temperature": 0},
@@ -117,7 +134,7 @@ class GeminiProvider:
             data=json.dumps(body).encode(),
             headers={"x-goog-api-key": self.api_key, "Content-Type": "application/json"},
         )
-        data = self._post(req, retries=1)
+        data = self._post(req, retries=1, deadline=time.monotonic() + (timeout or self.timeout))
         try:
             text = data["candidates"][0]["content"]["parts"][0]["text"]
             return json.loads(text)
@@ -133,9 +150,13 @@ class FakeProvider:
     respond: Callable[[str], Any] | None = None
     model: str = "fake-model"
     prompts: list[str] = field(default_factory=list)
+    timeouts: list[float | None] = field(default_factory=list)
 
-    def generate_json(self, prompt: str, schema: dict[str, Any], system: str | None = None) -> Any:
+    def generate_json(
+        self, prompt: str, schema: dict[str, Any], system: str | None = None, timeout: float | None = None
+    ) -> Any:
         self.prompts.append(prompt)
+        self.timeouts.append(timeout)
         if self.respond is not None:
             return self.respond(prompt)
         if not self.responses:
@@ -214,10 +235,12 @@ class BudgetedLLM:
         if self.db.llm_calls_since(now - timedelta(minutes=1)) >= self.per_minute:
             raise RateLimited(f"shared limit of {self.per_minute} LLM calls per minute reached")
 
-    def generate_json(self, prompt: str, schema: dict[str, Any], system: str | None = None) -> Any:
+    def generate_json(
+        self, prompt: str, schema: dict[str, Any], system: str | None = None, timeout: float | None = None
+    ) -> Any:
         self.check()
         try:
-            result = self.provider.generate_json(prompt, schema, system)
+            result = self.provider.generate_json(prompt, schema, system, timeout)
         except LLMError:
             self._record(ok=False)  # a failed call still used a request
             raise

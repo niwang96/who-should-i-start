@@ -4,7 +4,7 @@
     <p class="intro">Stuck between two players? Enter both and your scoring. An AI weighs the expert
       consensus, recent usage, matchups, injury news and Reddit's take, then makes the call and shows
       its sources.</p>
-    <form action="/ask" method="post" hx-post="/ask" hx-target="#result" hx-swap="innerHTML show:#result:top" hx-indicator="#asking">
+    <form action="/ask" method="post" hx-post="/ask" hx-target="#result" hx-swap="innerHTML show:#result:top" hx-indicator="#asking" hx-disabled-elt="find button">
       <div class="matchup">
         {% for i in range(max_players) %}
         {% set value = players[i] if i < players|length else "" %}
@@ -27,7 +27,8 @@
           </div>
         </fieldset>
         <div class="go">
-          <span id="asking" class="htmx-indicator" role="status">Weighing the evidence…</span>
+          <span id="asking" class="htmx-indicator" role="status"><span class="spinner" aria-hidden="true"></span>
+            <span>Weighing the evidence. This can take up to 20 seconds, so please don't refresh the page.</span></span>
           <button type="submit">Who should I start?</button>
         </div>
       </div>

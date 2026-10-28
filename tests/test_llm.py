@@ -175,7 +175,7 @@ def test_visitor_id_hashes_the_address_with_a_salt():
 
 @pytest.mark.parametrize(
     "failure",
-    [ConnectionResetError("reset by peer"), TimeoutError("read timed out"), None],  # None: a body that isn't JSON
+    [ConnectionResetError("reset by peer"), None],  # None: a body that isn't JSON
 )
 def test_gemini_turns_any_transport_or_decoding_failure_into_an_llm_error(monkeypatch, failure):
     def urlopen(req, timeout):
@@ -204,3 +204,33 @@ def test_visitors_are_counted_per_ipv4_address_and_per_ipv6_64(address, network)
 def test_one_ipv6_network_is_one_visitor():
     assert llm.visitor_id("2001:db8:aaaa:bbbb::1", "s") == llm.visitor_id("2001:db8:aaaa:bbbb::2", "s")
     assert llm.visitor_id("2001:db8:aaaa:bbbb::1", "s") != llm.visitor_id("2001:db8:aaaa:cccc::1", "s")
+
+
+@pytest.mark.parametrize("failure", [TimeoutError("read timed out"), urllib.error.URLError(TimeoutError("timed out"))])
+def test_a_slow_gemini_answer_is_a_timeout(monkeypatch, failure):
+    seen = []
+
+    def urlopen(req, timeout):
+        seen.append(timeout)
+        raise failure
+
+    monkeypatch.setattr(llm.urllib.request, "urlopen", urlopen)
+    with pytest.raises(llm.TimedOut):
+        GeminiProvider(api_key="k").generate_json("p", {}, timeout=7)
+    assert 6 < seen[0] <= 7  # the call's own limit, not the provider's 60 s
+
+
+def test_no_retry_after_an_overload_when_the_deadline_leaves_no_room(monkeypatch):
+    calls = []
+
+    def fail(req, timeout):
+        calls.append(timeout)
+        raise urllib.error.HTTPError(req.full_url, 503, "busy", {}, io.BytesIO(b"busy"))
+
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fail)
+    with pytest.raises(LLMError, match="503"):
+        GeminiProvider(api_key="k").generate_json("p", {}, timeout=3)  # less than 2 x the 2 s retry delay
+    assert len(calls) == 1
+    with pytest.raises(llm.TimedOut):
+        GeminiProvider(api_key="k").generate_json("p", {}, timeout=-1)  # already out of time: no call
+    assert len(calls) == 1

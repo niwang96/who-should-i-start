@@ -198,6 +198,11 @@ Many users will ask about the same players, so cache per-player results.
    - Fallback notes say why in plain words; the daily-limit note gives the reset time (midnight UTC, shown in Eastern).
    - No em dashes anywhere: templates and docs use plain punctuation, the prompt (`PROMPT_VERSION` 6) asks for short direct sentences without dashes or filler, and `decide.plain` replaces any dash the model writes (also in stored answers when shown).
    - Known gap (live check, Oct 28): validation catches made-up numbers and swapped names but not a comparison stated backwards (the model said a 4.5-point underdog had the higher implied points). Worth a check if it shows up in real answers.
+8. **Slow AI fallback** (Oct 28 2026, after a QB question showed nothing on the live site):
+   - Cause: Gemini got slow. One decision call took 12 to 44 s (about 1 s on Oct 24), with no thinking tokens, so it's the service, not the prompt. Past Vercel's 30 s `maxDuration` the request is cut off, and htmx ignores error responses, so the page stayed blank. Nothing QB-specific.
+   - `decide(..., deadline=)` bounds all the AI calls of one answer; the web app passes `AI_ANSWER_SECONDS` = 20 (room for a cold start, the database and logging). `GeminiProvider` applies the deadline to the whole call, its 5xx retry included, and raises `TimedOut`; the answer falls back to the expert-consensus pick with "The AI is slow right now" (`Decision.fallback = "slow"`, in `benchmark.NOT_ANSWERED`). A validation retry is skipped with under 5 s left. The ingest jobs and the benchmark keep the provider's 60 s.
+   - `static/app.js` shows a message on any failed request (an error status, Vercel's timeout, no connection) instead of leaving the page unchanged. While waiting, a spinner shows with "This can take up to 20 seconds, so please don't refresh the page", and the button is disabled (`hx-disabled-elt`) so it can't be pressed twice.
+   - Live check after the fix (local, real Gemini): QB questions answered by the AI in 17 to 18 s.
 
 ## Open to-dos
 - [x] Request FantasyPros API key (approved; key received)
