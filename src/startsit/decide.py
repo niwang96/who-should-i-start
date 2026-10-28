@@ -44,7 +44,7 @@ from startsit.scoring import SCORINGS, Scoring
 log = logging.getLogger("startsit.decide")
 
 # Of the 500/day Gemini free tier: news gets 60, decisions this, the rest is headroom.
-DECIDE_DAILY_LLM_BUDGET = 390
+DECIDE_DAILY_LLM_BUDGET = 370
 # New (uncached) AI answers per visitor; cached answers and baseline picks are unlimited.
 VISITOR_LIMITS = (
     VisitorLimit(6, timedelta(minutes=10), "10 minutes"),

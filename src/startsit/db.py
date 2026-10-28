@@ -194,6 +194,39 @@ class NewsFactRow(TypedDict):
     game_status: str | None  # out | doubtful | questionable | active, when the item states one
 
 
+class RedditCommentRow(TypedDict):
+    """One comment from r/fantasyfootball's daily "Who Do I Start" (WDIS) threads, via RSS."""
+
+    comment_id: str  # Reddit's "t1_..." id
+    thread_id: str  # "t3_..."
+    thread_title: str  # e.g. "Official: [WDIS RB] - Tue 10/27/2026"
+    author: str | None
+    published_at: str  # ISO 8601, UTC
+    text: str  # plain text, truncated
+    url: str  # the comment's permalink
+    fetched_at: str
+
+
+class RedditExtractionRow(TypedDict):
+    """The L2 cache for Reddit: one row per comment the LLM has processed, so none is sent twice."""
+
+    comment_id: str
+    model: str
+    extracted_at: str
+    vote_count: int
+
+
+class CrowdVoteRow(TypedDict):
+    """One start/sit vote for a player, read from one comment."""
+
+    comment_id: str
+    player_id: str
+    verdict: str  # start | sit
+    reason: str | None  # the commenter's stated reason, restated briefly; None if they gave none
+    published_at: str
+    url: str
+
+
 class ProjectionRow(TypedDict):
     """FantasyPros per-format projections, one archived copy per fetch date (see startsit.ingest.projections)."""
 
@@ -313,6 +346,9 @@ TABLES: dict[str, Table] = {
         Table("news_items", NewsItemRow, ("item_id",)),
         Table("news_extractions", NewsExtractionRow, ("item_id",)),
         Table("news_facts", NewsFactRow, ("item_id", "player_id")),
+        Table("reddit_comments", RedditCommentRow, ("comment_id",)),
+        Table("reddit_extractions", RedditExtractionRow, ("comment_id",)),
+        Table("crowd_votes", CrowdVoteRow, ("comment_id", "player_id")),
         Table("decision_cache", DecisionCacheRow, ("cache_key",)),
         Table("projections", ProjectionRow, ("season", "week", "fetched_date", "fantasypros_id")),
         Table("recommendations", RecommendationRow, ("rec_id",)),
@@ -539,6 +575,33 @@ class Database:
                 (since, limit),
             ),
         )
+
+    def unextracted_reddit(self, since: str, limit: int) -> list[RedditCommentRow]:
+        """Reddit comments published at or after `since` that the LLM hasn't processed yet, newest first."""
+        return cast(
+            "list[RedditCommentRow]",
+            self.query(
+                "SELECT c.* FROM reddit_comments c LEFT JOIN reddit_extractions e ON e.comment_id = c.comment_id "
+                "WHERE e.comment_id IS NULL AND c.published_at >= ? ORDER BY c.published_at DESC LIMIT ?",
+                (since, limit),
+            ),
+        )
+
+    def crowd_votes(self, player_id: str, since: str, until: str) -> list[CrowdVoteRow]:
+        """The player's crowd votes from comments published in [since, until], newest first."""
+        return cast(
+            "list[CrowdVoteRow]",
+            self.query(
+                "SELECT * FROM crowd_votes WHERE player_id = ? AND published_at >= ? AND published_at <= ? "
+                "ORDER BY published_at DESC",
+                (player_id, since, until),
+            ),
+        )
+
+    def last_run_at(self, source: str) -> str | None:
+        """When `ingest_runs` last recorded this source ('YYYY-MM-DD HH:MM:SS', UTC), or None."""
+        value = self._scalar("SELECT max(finished_at) AS t FROM ingest_runs WHERE source = ?", (source,))
+        return str(value)[:19] if value is not None else None
 
     def news_for_player(self, player_id: str, since: str, until: str, limit: int) -> list[NewsFactRow]:
         """The player's news facts published in [since, until], newest first."""

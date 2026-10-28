@@ -14,7 +14,8 @@ rankings file so each update is archived within the hour. It also runs the daily
 refresh when that's due (none since the latest 10:00 UTC), so the daily data arrives even
 when GitHub drops the scheduled run meant for it; every scheduled run uses this mode. Once
 a week, a few hours before the first Sunday kickoff, it asks the AI the weekly benchmark
-matchups (startsit.benchmark).
+matchups (startsit.benchmark). Every 6 hours it also reads the newest r/fantasyfootball "Who Do
+I Start" threads and extracts crowd votes (startsit.ingest.reddit, reddit_extract).
 
 news-fetch: stores new RSS items only (no LLM), for frequent polling of feeds that only
 list their latest few items, by hand; the next news run extracts them.
@@ -33,7 +34,7 @@ from startsit import benchmark, evaluate
 from startsit.db import TABLES, Database
 from startsit.evidence import current_week
 from startsit.features import compute_usage_features
-from startsit.ingest import news, news_extract, nflverse, projections, rankings
+from startsit.ingest import news, news_extract, nflverse, projections, rankings, reddit, reddit_extract
 from startsit.llm import BudgetedLLM, budgeted_gemini
 
 log = logging.getLogger("startsit.ingest")
@@ -43,6 +44,9 @@ STALE_RANKINGS_DAYS = 3
 # News gets a slice of the 500/day Gemini free tier; the rest is for start/sit answers.
 # Hourly runs plus the Sunday-morning and pre-night-game runs make at most ~40 calls a day.
 NEWS_DAILY_LLM_BUDGET = 60
+# Reddit vote extraction (step 6b): a fetch every 6 hours brings a few hundred short comments,
+# ~2-5 calls at 50 per call. Gemini's 500/day: decide 370 + news 60 + benchmark 45 + reddit 20.
+REDDIT_DAILY_LLM_BUDGET = 20
 # The daily stats refresh is due once per day after this time (UTC): nflverse's overnight
 # updates are in by then (6am US Eastern).
 DAILY_REFRESH_AFTER = time(10, 0)
@@ -159,6 +163,22 @@ def run_evaluation(db: Database) -> int:
     return n
 
 
+def run_reddit(db: Database, season: int, now: datetime | None = None) -> dict[str, int]:
+    """Fetch WDIS comments when due (every 6 hours), then extract votes from any not yet processed."""
+    now = now or datetime.now(UTC)
+    counts = {"reddit_comments": reddit.fetch_comments(db, season, now) if reddit.due(db, now) else 0}
+    llm = budgeted_gemini(db, "reddit", REDDIT_DAILY_LLM_BUDGET, "reddit extraction disabled")
+    if llm is not None:
+        result = reddit_extract.extract_votes(db, llm, now)
+        counts |= {
+            "reddit_extracted": result.comments_processed,
+            "crowd_votes": result.votes,
+            "llm_calls": result.calls,
+        }
+    log.info("reddit: %s", counts)
+    return counts
+
+
 def benchmark_llm(db: Database) -> BudgetedLLM | None:
     return budgeted_gemini(db, "benchmark", benchmark.BENCHMARK_DAILY_LLM_BUDGET, "benchmark skipped")
 
@@ -248,6 +268,8 @@ def main() -> None:
             llm = budgeted_gemini(db, "news", NEWS_DAILY_LLM_BUDGET, "news extraction disabled")
             run_news(db, news.fetch_all(), llm, args.season)
         if args.only == "news":
+            # Before the benchmark, so Sunday's set sees the morning's crowd votes.
+            _optional("reddit", lambda: run_reddit(db, args.season))
             _optional("benchmark", lambda: run_benchmark(db, args.season))
             _optional("benchmark backfill", lambda: run_backfill(db, args.season))
 

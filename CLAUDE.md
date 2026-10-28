@@ -168,8 +168,18 @@ Many users will ask about the same players, so cache per-player results.
      - **Public "Track record" page:** hit rates per week and for the season, by pick type. It also shows the matchups where the AI overrode the baseline and who was right, and calibration (does High hit more often than Low?). Decided to make it public: it's the portfolio story, bad weeks included.
    - **6b. Reddit** (access findings under Open to-dos: JSON is blocked from Actions, RSS works but is rate-limited):
      - **Access checked (Oct 28):** the search RSS finds the daily per-position WDIS threads, and their comments RSS works at ~60 s spacing. Comments are mostly questions; answers are short replies; there are no upvotes (details under Open to-dos).
-     - **Ingest:** a few game-day runs (e.g. Saturday evening, Sunday morning) read those threads' comment feeds, ~60 s apart. A 403/429 means no Reddit data that run, never a failure.
-     - **Extraction:** batched and cached per comment, like news: `{player, start/sit, reason, link}` (RSS carries no upvotes). Bots and memes are filtered out. Own daily budget (~20 calls; 400 + 60 + 20 stays under Gemini's 500).
+     - **Ingest (built Oct 28 2026, `startsit/ingest/reddit.py`):**
+       - News runs fetch at most every 6 hours (`reddit.due`, `ingest_runs` source `reddit:comments`), before the benchmark so Sunday's set sees the morning's votes.
+       - A fetch reads the search feed, then the comments feed (`limit=100`) of each of the newest day's WDIS threads, 60 s apart. A 429 waits out Reddit's `x-ratelimit-reset` once (up to 120 s). Any other refusal stops the fetch for that run: no Reddit data, never a failure.
+       - Comments are stored in `reddit_comments`, skipping the post itself (`t3_`), AutoModerator, deleted and empty ones. Text is capped at 500 characters.
+       - The ingest job timeout is 40 minutes: a fetch adds ~5.
+     - **Extraction (built, `startsit/ingest/reddit_extract.py`):**
+       - Batches of 50, newest first, comments from the last 4 days.
+       - The prompt keeps only stated recommendations (a bare player name in a reply counts as start). Questions, the asker's own lean, jokes, kickers and defenses yield nothing.
+       - Votes `{player, start|sit, reason}` go to `crowd_votes`, matched by exact full name (team breaks ties). Unmatched or ambiguous names are dropped. Every processed comment is cached in `reddit_extractions`.
+       - Budget `reddit` 20/day; decide lowered to 370, so 370 + 60 + 45 + 20 = 495 of Gemini's 500.
+       - Live test: `test_reddit_wdis_comments_become_crowd_votes` (one Gemini call) runs the real fetcher, parser and extraction on today's WDIS thread and prints the votes.
+     - **Next (separate PR):** crowd evidence in the packet, the crowd pick on every recommendation and in the evaluation, and the UI note when the crowd and the experts disagree.
      - **Evidence:** a per-player crowd item (e.g. "Reddit: 8 start / 2 sit"), plus items for comments that carry new information (practice report, role change). The prompt treats new information differently from plain preference.
      - **Crowd pick:** computed in code from the counts, logged with every recommendation, and scored by 6a. Crowd opinion can beat expert consensus, especially on late news the rankings haven't absorbed; the evaluation decides how much weight it earns.
      - **UI:** when the crowd and the experts disagree, the answer says so plainly.
@@ -199,7 +209,7 @@ Many users will ask about the same players, so cache per-player results.
   - `.json` is **blocked** (403 "Blocked") on both `www.reddit.com` and `old.reddit.com`, so the JSON plan above doesn't work from Actions.
   - **RSS works:** `https://www.reddit.com/r/fantasyfootball/new/.rss` returned 200 with real posts (Atom).
   - The sub-wide comments feed (`/r/fantasyfootball/comments/.rss`) got **429** as the 4th request in ~6 s (2 s apart), so unauthenticated RSS is tightly rate-limited.
-  - **Thread check (Oct 28 2026, `test_reddit_threads_and_comments_via_rss`, `only` = `reddit_threads`):**
+  - **Thread check (Oct 28 2026, then `test_reddit_threads_and_comments_via_rss`, since replaced by `test_reddit_wdis_comments_become_crowd_votes`; `only` = `reddit`):**
     - **Finding threads works.** The search feed (`/r/fantasyfootball/search.rss?q=title%3AWDIS&restrict_sr=1&sort=new`) returned the daily threads `Official: [WDIS QB|RB|WR|Flex|K/TE/DEF] - Tue 10/27/2026`: five a day, one per position.
     - **Reading comments works at 60 s spacing.** A thread's comments feed (`<thread link>/.rss?limit=50`) got **429** 12 s after the search request, but **200 with 49 entries** at 60 s. Plan on ~60 s between Reddit requests (~5 minutes for the five threads).
     - **Most comments are questions**, e.g. "PPR Pick 3 AJB vs Miami, Moore vs Baltimore, …". The crowd signal is in the replies. The feed is flat (no reply structure is visible in the entries), so extraction has to work from the reply text (names a player) and any quoted context.

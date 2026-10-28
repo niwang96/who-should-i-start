@@ -29,3 +29,18 @@ def db(request: pytest.FixtureRequest) -> Iterator[Database]:
         pytest.skip("STARTSIT_TEST_DATABASE_URL not set")
     with Database(target) as database:
         yield database
+
+
+@pytest.fixture(autouse=True)
+def no_reddit_network(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unit tests never reach Reddit (e.g. the ingest CLI tests' news runs); tests fake it per case.
+    Live tests (marker `live`) do reach it."""
+    from startsit.ingest import reddit
+
+    if request.node.get_closest_marker("live"):
+        return
+
+    def offline(url: str, *args: object, **kwargs: object) -> bytes:
+        raise OSError("network disabled in unit tests")
+
+    monkeypatch.setattr(reddit, "get_bytes", offline)

@@ -38,9 +38,9 @@ concurrency: ingest
 jobs:
   ingest:
     runs-on: ubuntu-latest
-    # A benchmark set (live or backfill) adds ~8 minutes: 30+ AI calls, 15 s apart; an interrupted
-    # set resumes on the next run.
-    timeout-minutes: 25
+    # A benchmark set (live or backfill) adds ~8-13 minutes: 30+ AI calls, 15 s apart; an interrupted
+    # set resumes on the next run. A Reddit fetch (every 6 hours) adds ~5 minutes: 6 requests a minute apart.
+    timeout-minutes: 40
     env:
       # Supabase when the secret is set; otherwise a fresh SQLite file uploaded as an artifact.
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
