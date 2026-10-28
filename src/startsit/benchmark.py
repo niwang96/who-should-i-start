@@ -28,7 +28,8 @@ from startsit.scoring import SCORINGS, Scoring
 
 log = logging.getLogger("startsit.benchmark")
 
-# Gemini's free tier allows 500 requests/day: decide 390 + news 60 + benchmark 45 (30 matchups + retries).
+# Gemini's free tier allows 500 requests/day: decide 370 + news 60 + benchmark 45 (30 matchups + retries)
+# + reddit 20.
 BENCHMARK_DAILY_LLM_BUDGET = 45
 # Matchups per position, and the position rank where pairs start (1-based): borderline starters.
 PAIRS = {"QB": 4, "RB": 9, "WR": 12, "TE": 5}

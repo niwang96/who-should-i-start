@@ -5,7 +5,8 @@ rejects, a moved feed, renamed nflverse columns. Run them with `pytest -m live` 
 them only on merges to main that touch a source adapter, and when started by hand).
 
 Quota per run, kept as small as possible:
-- Gemini: 2 calls (one decision, one news extraction), at most 4 with validation retries;
+- Gemini: 3 calls (one decision, one news extraction, one Reddit vote extraction), at most 5
+  with validation retries;
   `LIVE_GEMINI_BUDGET` enforces the ceiling. Gemini's free tier allows 500/day.
 - FantasyPros: 1 call (one batch of projections). The free key allows ~75/day; the daily
   ingest uses ~26.
@@ -17,7 +18,6 @@ Each test skips when its key isn't set, so forks and local runs without keys sti
 from __future__ import annotations
 
 import os
-import re
 import time
 import urllib.error
 from datetime import UTC, datetime
@@ -36,7 +36,7 @@ from startsit.llm import BudgetedLLM, GeminiProvider
 
 pytestmark = pytest.mark.live
 
-LIVE_GEMINI_BUDGET = 4  # hard ceiling on Gemini calls per run, across these tests
+LIVE_GEMINI_BUDGET = 5  # hard ceiling on Gemini calls per run, across these tests
 
 
 def needs(var: str) -> None:
@@ -160,8 +160,13 @@ def test_rankings_file_has_the_columns_we_read():
     rankings.build_rankings(raw, schedule(), season())  # maps without error (empty off-season)
 
 
+@cache
+def nflverse_raw() -> nflverse.RawNflverse:
+    return nflverse.fetch(season())
+
+
 def test_nflverse_season_builds_every_table():
-    raw = nflverse.fetch(season())
+    raw = nflverse_raw()
     weeks = nflverse.build_player_weeks(raw)
     assert not weeks.is_empty()
     for frame in (
@@ -202,68 +207,36 @@ def test_reddit_is_readable_from_this_runner():
     assert any(status.startswith("200") for status in results.values()), f"every route blocked:\n{report}"
 
 
-ATOM = "{http://www.w3.org/2005/Atom}"
-# r/fantasyfootball's daily "Who Do I Start" threads are titled like "Official: [WDIS RB] - Wed 10/28/2026".
-WDIS_SEARCH = "https://www.reddit.com/r/fantasyfootball/search.rss?q=title%3AWDIS&restrict_sr=1&sort=new&limit=10"
-REDDIT_SPACING = 60  # seconds between Reddit requests: unauthenticated RSS is tightly rate-limited
+def test_reddit_wdis_comments_become_crowd_votes(gemini, live_db):
+    # Step 6b end to end on live data: find today's WDIS threads, read one thread's comments with
+    # the real fetcher (60 s after the search, waiting out a 429 once), and extract votes in one
+    # Gemini call. Skips if Reddit is throttling this runner: that's Reddit's limit, not our bug.
+    from startsit.ingest import reddit, reddit_extract
 
+    body = reddit.reddit_get(reddit.SEARCH_URL)
+    if body is None:
+        pytest.skip("Reddit refused the search feed (rate limit on a shared runner IP)")
+    threads = reddit.latest_threads(body)
+    print("threads:", [t.title for t in threads])
+    assert threads, "no WDIS threads in the search feed"
+    time.sleep(reddit.SPACING)
+    feed = reddit.reddit_get(reddit.comments_url(threads[0]))
+    if feed is None:
+        pytest.skip("Reddit refused the comments feed (rate limit on a shared runner IP)")
+    now = datetime.now(UTC)
+    comments = reddit.comments(feed, threads[0], now)
+    print(f"{threads[0].title}: {len(comments)} comments")
+    assert comments, "the thread's feed had no usable comments"
 
-def reddit_entries(url: str, retry: bool = True) -> tuple[str, list[dict[str, str]]]:
-    """(status, Atom entries as {title, link, content}) for one feed; never raises.
-
-    On a 429, waits out Reddit's own x-ratelimit-reset (runners share IPs, so the allowance may
-    already be spent by someone else) and tries once more.
-    """
-    from defusedxml import ElementTree
-
-    try:
-        root = ElementTree.fromstring(get_bytes(url))
-    except urllib.error.HTTPError as e:
-        limits = {k: v for k, v in e.headers.items() if k.lower().startswith(("retry-after", "x-ratelimit"))}
-        reset = float(limits.get("x-ratelimit-reset", limits.get("retry-after", "60")) or 60)
-        if e.code == 429 and retry and reset <= 120:
-            time.sleep(reset + 2)
-            return reddit_entries(url, retry=False)
-        return f"{e.code} {e.reason} {limits}", []
-    except (OSError, ElementTree.ParseError) as e:
-        return f"{type(e).__name__}: {e}", []
-    entries = [
-        {
-            "title": e.findtext(f"{ATOM}title", ""),
-            "link": (e.find(f"{ATOM}link").get("href", "") if e.find(f"{ATOM}link") is not None else ""),
-            "content": e.findtext(f"{ATOM}content", ""),
-        }
-        for e in root.iter(f"{ATOM}entry")
-    ]
-    return "200", entries
-
-
-def skip_if_throttled(status: str) -> None:
-    """Reddit's rate limit on a shared runner IP isn't our bug: skip (visibly) rather than fail."""
-    if status.startswith("429"):
-        pytest.skip(f"Reddit rate-limited this runner even after waiting: {status}")
-
-
-def test_reddit_threads_and_comments_via_rss():
-    # Step 6b's path: find the newest WDIS thread with the search feed, then read its comments feed.
-    status, threads = reddit_entries(WDIS_SEARCH)
-    print(f"search: {status}, {len(threads)} threads")
-    for t in threads[:5]:
-        print(f"  {t['title']}  <- {t['link']}")
-    skip_if_throttled(status)
-    assert status == "200" and threads, f"search feed: {status}"
-    thread = threads[0]
-    assert re.search(r"/comments/\w+/", thread["link"]), thread["link"]
-    time.sleep(REDDIT_SPACING)
-    status, comments = reddit_entries(thread["link"].rstrip("/") + "/.rss?limit=50")
-    print(f"comments of {thread['title']!r}: {status}, {len(comments)} entries")
-    for c in comments[1:4]:  # the first entry is the post itself
-        text = re.sub(r"<[^>]+>", " ", c["content"])
-        print("  -", " ".join(text.split())[:160])
-    if not status.startswith("200"):  # try the old.reddit host once before giving up
-        time.sleep(REDDIT_SPACING)
-        old = thread["link"].replace("www.reddit.com", "old.reddit.com").rstrip("/") + "/.rss?limit=50"
-        status, comments = reddit_entries(old)
-        print(f"old.reddit comments: {status}, {len(comments)} entries")
-    skip_if_throttled(status)
-    assert status == "200" and len(comments) > 1, f"comments feed: {status}"
+    raw = nflverse_raw()
+    live_db.upsert("players", nflverse.build_players(raw, nflverse.build_player_weeks(raw)).to_dicts())
+    live_db.upsert("reddit_comments", comments[:50])
+    result = reddit_extract.extract_votes(live_db, gemini, now)
+    print(f"extracted: {result}")
+    for v in live_db.query(
+        "SELECT c.text, v.player_id, v.verdict, v.reason FROM crowd_votes v "
+        "JOIN reddit_comments c ON c.comment_id = v.comment_id"
+    )[:15]:
+        print(f"  {v['verdict']:5} {v['player_id']}  <- {v['text'][:90]!r}  ({v['reason']})")
+    assert result.calls == 1 and result.stopped_early is None
+    assert result.votes > 0, "no votes from a busy WDIS thread: check the prompt"
