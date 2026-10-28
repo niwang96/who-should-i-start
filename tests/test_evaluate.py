@@ -163,9 +163,18 @@ def test_report_compares_the_picks_on_the_matchups_the_ai_answered(week):
     assert report.weeks["users"][7].matchups == 3
     assert str(report.totals["benchmark"].ai) == "1/1 (100%)"
     assert str(report.totals["backfill"].ai) == "0/1 (0%)"
-    [override] = report.overrides["users"]
-    assert override == evaluate.Override(7, "ppr", "Player A", 20.0, "Player B", 12.0, 1)
-    assert "benchmark" not in report.overrides  # it agreed with the baseline
+    [override] = report.overrides("users")
+    assert (override.rec_id, override.pick, override.baseline_pick, override.pick_hit) == (
+        "ai-right-override",
+        "Player A",
+        "Player B",
+        1,
+    )
+    assert override.points == {"Player A": 20.0, "Player B": 12.0} and override.overrode
+    assert report.overrides("benchmark") == []  # it agreed with the baseline
+    assert len(report.matchups["users"]) == 3
+    no_ai = next(m for m in report.matchups["users"] if m.rec_id == "no-ai")
+    assert not no_ai.ai_answered and not no_ai.overrode and no_ai.consensus_pick == "Player B"
 
     text = evaluate.report_text(report)
     assert "users:\n    week 7: 2 AI-answered | AI 1/2 (50%) | baseline 0/2 (0%)" in text

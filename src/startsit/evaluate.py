@@ -178,29 +178,42 @@ class Summary:
 
 
 @dataclass(frozen=True)
-class Override:
-    """A scored matchup where the AI's pick went against the baseline."""
+class Matchup:
+    """One scored recommendation, by player name, for the track record and its "Why" links."""
 
+    rec_id: str
     week: int
     scoring: str
-    ai_pick: str  # name
-    ai_points: float
+    points: dict[str, float]  # player name -> actual points, in the order asked
+    pick: str  # the pick shown
     baseline_pick: str
-    baseline_points: float
-    hit: int | None  # the AI's pick: 1/0, None for a tie
+    consensus_pick: str | None
+    ai_answered: bool
+    pick_hit: int | None  # 1/0, None for a tie
+    baseline_hit: int | None
+    consensus_hit: int | None
+
+    @property
+    def overrode(self) -> bool:
+        """Whether the AI went against the baseline."""
+        return self.ai_answered and self.pick != self.baseline_pick
 
     @staticmethod
-    def from_row(row: dict[str, Any]) -> Override:
+    def from_row(row: dict[str, Any]) -> Matchup:
         names = {p["player_id"]: p["name"] for p in json.loads(row["packet_json"])["players"]}
         points = json.loads(row["points_json"])
-        return Override(
+        return Matchup(
+            rec_id=row["rec_id"],
             week=row["week"],
             scoring=row["scoring"],
-            ai_pick=names[row["pick"]],
-            ai_points=points[row["pick"]],
+            points={names[pid]: points[pid] for pid in names},
+            pick=names[row["pick"]],
             baseline_pick=names[row["baseline_pick"]],
-            baseline_points=points[row["baseline_pick"]],
-            hit=row["pick_hit"],
+            consensus_pick=names.get(row["consensus_pick"]) if row["consensus_pick"] else None,
+            ai_answered=row["source"] in AI_SOURCES,
+            pick_hit=row["pick_hit"],
+            baseline_hit=row["baseline_hit"],
+            consensus_hit=row["consensus_hit"],
         )
 
 
@@ -209,7 +222,11 @@ class Report:
     season: int
     weeks: dict[str, dict[int, Summary]]  # group ("users" | "benchmark" | "backfill") -> week -> summary
     totals: dict[str, Summary]
-    overrides: dict[str, list[Override]] = field(default_factory=dict)  # group -> newest week first
+    matchups: dict[str, list[Matchup]] = field(default_factory=dict)  # group -> newest week first
+
+    def overrides(self, group: str) -> list[Matchup]:
+        """The group's matchups where the AI went against the baseline, newest week first."""
+        return [m for m in self.matchups.get(group, []) if m.overrode]
 
 
 def group_of(row: dict[str, Any]) -> str:
@@ -219,18 +236,17 @@ def group_of(row: dict[str, Any]) -> str:
 def build_report(db: Database, season: int) -> Report:
     weeks: dict[str, dict[int, Summary]] = defaultdict(lambda: defaultdict(Summary))
     totals: dict[str, Summary] = defaultdict(Summary)
-    overrides: dict[str, list[Override]] = defaultdict(list)
+    matchups: dict[str, list[Matchup]] = defaultdict(list)
     for row in db.scored_recommendations(season):
         group = group_of(row)
         weeks[group][row["week"]].add(row)
         totals[group].add(row)
-        if row["source"] in AI_SOURCES and row["pick"] != row["baseline_pick"]:
-            overrides[group].append(Override.from_row(row))
+        matchups[group].append(Matchup.from_row(row))
     return Report(
         season,
         {g: dict(w) for g, w in weeks.items()},
         dict(totals),
-        {g: sorted(o, key=lambda x: -x.week) for g, o in overrides.items()},
+        {g: sorted(m, key=lambda x: -x.week) for g, m in matchups.items()},  # stable: asked order within a week
     )
 
 

@@ -795,6 +795,12 @@ class Database:
         """Whether any player's stats for `team` in `week` are loaded (so its game is in the data)."""
         return self._exists("player_weeks", "season = ? AND week = ? AND team = ?", (season, week, team))
 
+    def recommendation(self, rec_id: str) -> RecommendationRow | None:
+        return cast("RecommendationRow | None", self._one("SELECT * FROM recommendations WHERE rec_id = ?", (rec_id,)))
+
+    def evaluation(self, rec_id: str) -> EvaluationRow | None:
+        return cast("EvaluationRow | None", self._one("SELECT * FROM evaluations WHERE rec_id = ?", (rec_id,)))
+
     def unscored_recommendations(self) -> list[RecommendationRow]:
         return cast(
             "list[RecommendationRow]",

@@ -156,6 +156,11 @@ Many users will ask about the same players, so cache per-player results.
          - Each card has: AI / consensus / baseline hit-rate tiles (AI with a 95% margin of error); a small-sample note under 100 decided matchups; a by-week table; the AI-vs-baseline overrides with the list of matchups (pick, points, right/wrong); and hit rate by confidence.
          - The report is cached per process for an hour (`RECORD_CACHE_SECONDS`); it changes once a day.
          - The page frame is shared via `templates/_layout.html`.
+       - **"Why" view** (Oct 28 2026, asked for after a Wan'Dale Robinson vs Omar Cooper pick):
+         - Each card on `/record` lists all its scored matchups: players with actual points, and the AI, consensus and baseline picks, each right/wrong.
+         - Every matchup links to `/record/<rec_id>`, which shows what happened, then the stored answer and its full evidence. It reuses `_result.html`, so it looks exactly as shown when asked.
+         - Rebuilt from `recommendations.packet_json`/`decision_json` (`EvidencePacket.from_json`, `Decision.from_json`): no AI call, nothing recomputed.
+         - Ids must be 32-hex (`REC_ID`); anything else 404s.
        - **Dry run on real data** (baseline only, no AI, Oct 27): 180 matchups over weeks 2–7, each mapped to the right week's Sunday ~3am ET scrape. Of 176 scored, the baseline hit 89/175 (51%) and the raw consensus 83/172 (48%): close calls are coin flips for the experts, the bar the AI has to clear. (The earlier 20-pair week 7 dry run: 6/17 each.)
      - **Actual points:** each player's PPR/half/standard points from the nflverse weekly stats the daily job already loads. A player who didn't play scores 0.
      - **Picks scored per matchup:** a pick hits when the chosen player outscores the other in the asked scoring. Four picks are scored side by side:
