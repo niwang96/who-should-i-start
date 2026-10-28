@@ -206,7 +206,7 @@ def test_reddit_is_readable_from_this_runner():
 ATOM = "{http://www.w3.org/2005/Atom}"
 # r/fantasyfootball's daily "Who Do I Start" threads are titled like "Official: [WDIS RB] - Wed 10/28/2026".
 WDIS_SEARCH = "https://www.reddit.com/r/fantasyfootball/search.rss?q=title%3AWDIS&restrict_sr=1&sort=new&limit=10"
-REDDIT_SPACING = 12  # seconds between Reddit requests: unauthenticated RSS is tightly rate-limited
+REDDIT_SPACING = 60  # seconds between Reddit requests: unauthenticated RSS is tightly rate-limited
 
 
 def reddit_entries(url: str) -> tuple[str, list[dict[str, str]]]:
@@ -216,7 +216,8 @@ def reddit_entries(url: str) -> tuple[str, list[dict[str, str]]]:
     try:
         root = ElementTree.fromstring(get_bytes(url))
     except urllib.error.HTTPError as e:
-        return f"{e.code} {e.reason}", []
+        limits = {k: v for k, v in e.headers.items() if k.lower().startswith(("retry-after", "x-ratelimit"))}
+        return f"{e.code} {e.reason} {limits}", []
     except (OSError, ElementTree.ParseError) as e:
         return f"{type(e).__name__}: {e}", []
     entries = [
@@ -245,4 +246,9 @@ def test_reddit_threads_and_comments_via_rss():
     for c in comments[1:4]:  # the first entry is the post itself
         text = re.sub(r"<[^>]+>", " ", c["content"])
         print("  -", " ".join(text.split())[:160])
+    if not status.startswith("200"):  # try the old.reddit host once before giving up
+        time.sleep(REDDIT_SPACING)
+        old = thread["link"].replace("www.reddit.com", "old.reddit.com").rstrip("/") + "/.rss?limit=50"
+        status, comments = reddit_entries(old)
+        print(f"old.reddit comments: {status}, {len(comments)} entries")
     assert status == "200" and len(comments) > 1, f"comments feed: {status}"
