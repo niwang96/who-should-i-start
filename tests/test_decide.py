@@ -273,3 +273,22 @@ def test_dashes_are_taken_out_of_the_ai_text(db):
     assert decision.factors[0].text == "Higher projection, by a bit."
     stored = json.loads(decision.to_json()) | {"summary": "Old \N{EM DASH} answer"}
     assert Decision.from_json(json.dumps(stored)).summary == "Old, answer"
+
+
+def test_a_slow_ai_falls_back_and_the_deadline_reaches_the_call(db):
+    from startsit.llm import TimedOut
+
+    provider = FakeProvider(responses=[TimedOut("slow")])
+    decision = decide(db, make_packet(), budgeted(db, provider), deadline=20)
+    assert (decision.source, decision.fallback) == ("baseline", "slow")
+    assert (
+        decision.note == "The AI is slow right now, so this is the expert-consensus pick. Try again in a few minutes."
+    )
+    assert 19 < provider.timeouts[0] <= 20
+
+
+def test_no_retry_when_the_deadline_leaves_too_little_time(db):
+    provider = FakeProvider(responses=[answer(pick="P9"), answer()])
+    decision = decide(db, make_packet(), budgeted(db, provider), deadline=1)
+    assert decision.fallback == "invalid" and len(provider.prompts) == 1  # the bad answer, no retry
+    assert decide(db, make_packet(), budgeted(db, FakeProvider(responses=[answer()]))).source == "llm"

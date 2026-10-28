@@ -22,6 +22,7 @@ import itertools
 import json
 import logging
 import re
+import time
 import uuid
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -35,6 +36,7 @@ from startsit.llm import (
     LLMError,
     QuotaExceeded,
     RateLimited,
+    TimedOut,
     VisitorLimit,
     VisitorLimited,
     budgeted_gemini,
@@ -57,9 +59,11 @@ MEDIUM_MARGIN = 2.0
 Confidence = Literal["high", "medium", "low"]
 CONFIDENCES: tuple[Confidence, ...] = ("high", "medium", "low")
 Source = Literal["llm", "cache", "baseline"]
-# Why a decision fell back to the baseline. The first four mean the AI never answered (it wasn't
-# called, or the call failed); "invalid" means it answered and the answer failed validation.
-Fallback = Literal["unavailable", "daily_limit", "busy", "visitor_limit", "invalid"]
+# Why a decision fell back to the baseline. All but "invalid" mean the AI never answered (it wasn't
+# called, the call failed or took too long); "invalid" means it answered and failed validation.
+Fallback = Literal["unavailable", "daily_limit", "busy", "visitor_limit", "slow", "invalid"]
+# A retry gets at least this many seconds of the deadline, or isn't tried.
+MIN_RETRY_SECONDS = 5.0
 
 SYSTEM_PROMPT = """You help a fantasy football manager decide which player to start.
 You get an evidence packet: numbered facts (E1, E2, ...) about each player, and a code baseline pick.
@@ -349,8 +353,13 @@ def reset_time(now: datetime | None = None) -> str:
     return f"{local.hour % 12 or 12} {local:%p} ET"
 
 
-def decide(db: Database, packet: EvidencePacket, llm: BudgetedLLM | None) -> Decision:
-    """The validated LLM pick (cached), else the baseline pick with a note saying why."""
+def decide(db: Database, packet: EvidencePacket, llm: BudgetedLLM | None, deadline: float | None = None) -> Decision:
+    """The validated LLM pick (cached), else the baseline pick with a note saying why.
+
+    `deadline` (seconds) bounds all the AI calls together, e.g. to answer within the web host's
+    time limit; without it each call gets the provider's own timeout.
+    """
+    started = time.monotonic()
 
     def fallback(reason: Fallback, note: str) -> Decision:
         decision = replace(baseline_decision(packet, note), fallback=reason)
@@ -366,11 +375,14 @@ def decide(db: Database, packet: EvidencePacket, llm: BudgetedLLM | None) -> Dec
     prompt = build_prompt(packet)
     problems: list[str] = []
     for _ in range(MAX_ATTEMPTS):
+        timeout = None if deadline is None else deadline - (time.monotonic() - started)
+        if problems and timeout is not None and timeout < MIN_RETRY_SECONDS:
+            break  # no time for a retry: the answer we have failed validation
         attempt = prompt
         if problems:
             attempt += "\n\nYour previous answer was rejected: " + "; ".join(problems) + ". Fix these and answer again."
         try:
-            raw = llm.generate_json(attempt, response_schema(list(player_keys(packet))), SYSTEM_PROMPT)
+            raw = llm.generate_json(attempt, response_schema(list(player_keys(packet))), SYSTEM_PROMPT, timeout)
         except QuotaExceeded:
             return fallback(
                 "daily_limit",
@@ -380,6 +392,8 @@ def decide(db: Database, packet: EvidencePacket, llm: BudgetedLLM | None) -> Dec
             return fallback("busy", f"The AI is busy right now, {FALLBACK_PICK}. Try again in a minute.")
         except VisitorLimited as e:
             return fallback("visitor_limit", f"You've reached the {e}, {FALLBACK_PICK}.")
+        except TimedOut:
+            return fallback("slow", f"The AI is slow right now, {FALLBACK_PICK}. Try again in a few minutes.")
         except LLMError as e:
             log.warning("decision call failed: %s", e)
             return fallback("unavailable", f"The AI isn't available right now, {FALLBACK_PICK}.")

@@ -42,7 +42,7 @@ BACKFILL_FROM_WEEK = 2
 CALL_SPACING = 15.0
 # Fallbacks where the AI never answered (busy, over a limit, unreachable): the set stops there
 # and a later run resumes it, rather than logging baseline picks as the AI's.
-NOT_ANSWERED = {"unavailable", "daily_limit", "busy", "visitor_limit"}
+NOT_ANSWERED = {"unavailable", "daily_limit", "busy", "visitor_limit", "slow"}
 TAGS = (BENCHMARK, BACKFILL)
 
 Matchup = tuple[str, str, Scoring]
