@@ -84,7 +84,7 @@ Many users will ask about the same players, so cache per-player results.
   - Visitors are counted per IPv4 address and per IPv6 /64 (`llm.visitor_network`), since one home gets a whole /64.
   - Only the first few form fields are read.
   - Workflow inputs reach shells only through env vars; the ingest job's token is `contents: read`.
-  - Accepted risk: news text from feeds reaches the LLM prompts (prompt injection). Its effect is bounded: picks must be one of the asked players, every number must be in the packet, and the global daily budget caps abuse.
+  - Accepted risk: news text from feeds and Reddit vote reasons (LLM-restated, ≤120 characters) reach the LLM prompts (prompt injection). Its effect is bounded: picks must be one of the asked players, every number must be in the packet, and the global daily budget caps abuse.
 - **Access:** the CLIs (`python -m startsit.ingest`, `python -m startsit.decide` for debugging) aren't network endpoints; they reach production only with the secrets. Secrets live only in GitHub Actions secrets, Vercel env vars and the Claude Code env. On Postgres all tables have RLS enabled with no policies (set on connect), which blocks Supabase's REST API; the app connects as the tables' owner.
 - **LLM:** Gemini free tier, model **`gemini-3.5-flash-lite`** (decided Oct 24 2026; 500 requests/day vs 20 for `gemini-3.5-flash`). Read the model id from `GEMINI_MODEL` (default `gemini-3.5-flash-lite`) behind a provider interface so it can be swapped. Newer Flash versions listed on the key (3.6/3.7/3.8) aren't usable for this project. Unit tests use a fake provider and never call a real LLM.
 
@@ -179,16 +179,18 @@ Many users will ask about the same players, so cache per-player results.
        - Comments are stored in `reddit_comments`, skipping the post itself (`t3_`), AutoModerator, deleted and empty ones. Text is capped at 500 characters.
        - The ingest job timeout is 40 minutes: a fetch adds ~5.
      - **Extraction (built, `startsit/ingest/reddit_extract.py`):**
-       - Batches of 50, newest first, comments from the last 4 days.
+       - Batches of 100 (raised from 50 on Oct 28, so a full fetch of 5 threads × 100 comments takes ≤5 calls), newest first, comments from the last 4 days.
        - The prompt keeps only stated recommendations (a bare player name in a reply counts as start). Questions, the asker's own lean, jokes, kickers and defenses yield nothing.
-       - Votes `{player, start|sit, reason}` go to `crowd_votes`, matched by exact full name (team breaks ties). Unmatched or ambiguous names are dropped. Every processed comment is cached in `reddit_extractions`.
+       - Votes `{player, start|sit, reason}` go to `crowd_votes`, matched by exact full name (team breaks ties), else by a one-word first or last name ("Egbuka", "Puka") that only one QB/RB/WR/TE in the current week's rankings has (`PlayerMatcher.match_one_word`; added Oct 28 after the first production run dropped ~40 surname-only votes). Unmatched or ambiguous names are dropped. Every processed comment is cached in `reddit_extractions`.
+       - **First production run (Oct 28 02:52 UTC):** 206 comments → 52 votes in 5 calls (before one-word matching).
        - Budget `reddit` 20/day; decide lowered to 370, so 370 + 60 + 45 + 20 = 495 of Gemini's 500.
        - Live test: `test_reddit_wdis_comments_become_crowd_votes` (one Gemini call) runs the real fetcher, parser and extraction on today's WDIS thread and prints the votes.
        - **First live run (Oct 28, WR thread of Tue 10/27):** 48 comments → 23 votes in 1 call. Nicknames resolved ("KC" → KC Concepcion, "P Wash" → Parker Washington, "Germie" → Germie Bernard, "AJB" → A.J. Brown), and questions yielded nothing. Known weakness: a ranking ("Moore, AJB, KC") counts every listed player as a start, though the last is effectively a sit. That's mild over-counting, acceptable since the crowd pick compares two players' counts, and the evaluation will show whether it matters.
-     - **Next (separate PR):** crowd evidence in the packet, the crowd pick on every recommendation and in the evaluation, and the UI note when the crowd and the experts disagree.
-     - **Evidence:** a per-player crowd item (e.g. "Reddit: 8 start / 2 sit"), plus items for comments that carry new information (practice report, role change). The prompt treats new information differently from plain preference.
-     - **Crowd pick:** computed in code from the counts, logged with every recommendation, and scored by 6a. Crowd opinion can beat expert consensus, especially on late news the rankings haven't absorbed; the evaluation decides how much weight it earns.
-     - **UI:** when the crowd and the experts disagree, the answer says so plainly.
+     - **Crowd signal (built Oct 28 2026):**
+       - **Evidence:** one `crowd` item per player with votes: "Reddit r/fantasyfootball Who Do I Start threads this week: 4 start / 1 sit (fans' opinions, one vote per comment); reasons given: …" (up to 2 distinct reasons, newest first), linking the newest comment. "This week" = published after the team's previous game ended (same cutoff as news game statuses) and before `as_of`, so past packets (backfill) have no crowd. No item when there are no votes.
+       - **Prompt (`PROMPT_VERSION` 5):** crowd items are opinion, not definite facts; in a close call (baseline margin under 2 pts) a clear crowd lean may decide it; a fan's stated reason is only that fan's claim. Live check: with a 3-point baseline gap and a 6–0 crowd lean the other way, the AI kept the experts' pick and mentioned the crowd.
+       - **Crowd pick** (`EvidencePacket.crowd_pick`): the player whose net votes (start − sit) lead every other player's by `CROWD_MIN_LEAD` = 2, else none. Stored as `recommendations.crowd_pick`, scored as `evaluations.crowd_hit` (None without a pick), and reported as the crowd rate (on AI-answered matchups and on all), so it's scored on fewer matchups than the others. Comments for "new information" items (practice reports, role changes) were left out: news already covers those from primary sources.
+       - **UI:** when the crowd pick differs from the baseline, the answer says "The Reddit crowd disagrees with the experts", with both players' counts and which side the AI took. `/record` adds a Reddit crowd tile and column once any crowd pick is scored.
 
 ## Open to-dos
 - [x] Request FantasyPros API key (approved; key received)

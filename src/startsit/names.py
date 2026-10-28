@@ -58,6 +58,22 @@ class PlayerMatcher:
         name a player's old team the day of a trade.
         """
         exact = self._by_name.get(normalize_name(name), [])
-        if len(exact) > 1 and team:
-            exact = [p for p in exact if (p["team"] or "").upper() == normalize_team(team)]
-        return exact[0]["player_id"] if len(exact) == 1 else None
+        return self._one(exact, team)
+
+    def match_one_word(self, name: str, team: str = "") -> str | None:
+        """The one player whose first or last name is this single word ("Egbuka", "Puka"), else None.
+
+        For forum comments, which name players by one name. Build the matcher on a small pool
+        (e.g. the week's ranked players), or common names match nobody.
+        """
+        word = normalize_name(name)
+        if not word or " " in word:
+            return None
+        found = [p for key, ps in self._by_name.items() if word in (key.split()[0], key.split()[-1]) for p in ps]
+        return self._one(found, team)
+
+    @staticmethod
+    def _one(found: list[PlayerRow], team: str) -> str | None:
+        if len(found) > 1 and team:
+            found = [p for p in found if (p["team"] or "").upper() == normalize_team(team)]
+        return found[0]["player_id"] if len(found) == 1 else None

@@ -7,9 +7,10 @@ only the recommendations it states. Questions and comments that don't recommend 
 nothing.
 
 Division of labor, as with news: the LLM returns the comment id, the player's name and team, the
-verdict and a short restated reason. Code matches the player to our players table (unmatched names
-are dropped), attaches the comment's link and date, and caches every processed comment in
-`reddit_extractions` so none is sent twice.
+verdict and a short restated reason. Code matches the player to our players table (by full name,
+else by a one-word name unique among the week's ranked players; unmatched names are dropped),
+attaches the comment's link and date, and caches every processed comment in `reddit_extractions`
+so none is sent twice.
 """
 
 from __future__ import annotations
@@ -21,16 +22,18 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from startsit.db import CrowdVoteRow, Database, RedditCommentRow, RedditExtractionRow, utc_iso
+from startsit.db import CrowdVoteRow, Database, PlayerRow, RedditCommentRow, RedditExtractionRow, utc_iso
+from startsit.evidence import current_week
 from startsit.llm import BudgetedLLM, LLMError
 from startsit.names import PlayerMatcher
 
 log = logging.getLogger("startsit.ingest.reddit_extract")
 
 VERDICTS = ("start", "sit")
-CHUNK_SIZE = 50  # comments per LLM call; they're short
+CHUNK_SIZE = 100  # comments per LLM call; they're short (a fetch reads up to 5 threads x 100)
 LOOKBACK = timedelta(days=4)  # older comments are about last week's games
 MAX_COMMENTS_PER_RUN = 500
+SKILL_POSITIONS = {"QB", "RB", "WR", "TE"}
 REASON_MAX_CHARS = 120
 
 SYSTEM_PROMPT = """You read comments from r/fantasyfootball's "Who Do I Start" threads and extract the
@@ -85,10 +88,26 @@ def build_prompt(comments: Sequence[RedditCommentRow]) -> str:
     return "\n".join(lines)
 
 
+def ranked_players(db: Database, players: Sequence[PlayerRow]) -> list[PlayerRow]:
+    """The QBs, RBs, WRs and TEs in the current week's rankings: the pool for one-word names."""
+    season = db.latest_season()
+    if season is None:
+        return []
+    ranked = {r["player_id"] for r in db.rankings_for_week(season, current_week(db, season))}
+    return [p for p in players if p["player_id"] in ranked and p["position"] in SKILL_POSITIONS]
+
+
 def votes_from_response(
-    response: Any, comments: Sequence[RedditCommentRow], matcher: PlayerMatcher
+    response: Any,
+    comments: Sequence[RedditCommentRow],
+    matcher: PlayerMatcher,
+    ranked: PlayerMatcher | None = None,
 ) -> list[CrowdVoteRow]:
-    """Validate the LLM output against the chunk and attach code-owned fields (player id, link, date)."""
+    """Validate the LLM output against the chunk and attach code-owned fields (player id, link, date).
+
+    Players are matched by full name, else (commenters often write "Egbuka" or "Puka") by a
+    one-word name that only one of the `ranked` players has.
+    """
     by_id = {f"C{i}": c for i, c in enumerate(comments, 1)}
     votes: dict[tuple[str, str], CrowdVoteRow] = {}  # by (comment_id, player_id): one vote per player per comment
     raw_votes = response.get("votes") if isinstance(response, dict) else None
@@ -99,7 +118,8 @@ def votes_from_response(
         verdict = raw.get("verdict")
         if comment is None or verdict not in VERDICTS:
             continue
-        player_id = matcher.match(str(raw.get("player", "")), str(raw.get("team", "")))
+        name, team = str(raw.get("player", "")), str(raw.get("team", ""))
+        player_id = matcher.match(name, team) or (ranked.match_one_word(name, team) if ranked else None)
         if player_id is None:
             log.info("crowd vote for unmatched player %r (%s) skipped", raw.get("player"), comment["comment_id"])
             continue
@@ -121,7 +141,8 @@ def extract_votes(db: Database, llm: BudgetedLLM, now: datetime | None = None) -
     pending = db.unextracted_reddit(utc_iso(now - LOOKBACK), MAX_COMMENTS_PER_RUN)
     if not pending:
         return ExtractionResult(0, 0, 0)
-    matcher = PlayerMatcher(db.all_players())
+    players = db.all_players()
+    matcher, ranked = PlayerMatcher(players), PlayerMatcher(ranked_players(db, players))
     processed = vote_count = calls = 0
     stopped: str | None = None
     for start in range(0, len(pending), CHUNK_SIZE):
@@ -135,7 +156,7 @@ def extract_votes(db: Database, llm: BudgetedLLM, now: datetime | None = None) -
         except LLMError as e:
             stopped = str(e)  # leave this chunk unextracted; the next run retries it
             break
-        votes = votes_from_response(response, chunk, matcher)
+        votes = votes_from_response(response, chunk, matcher, ranked)
         per_comment: dict[str, int] = defaultdict(int)
         for v in votes:
             per_comment[v["comment_id"]] += 1

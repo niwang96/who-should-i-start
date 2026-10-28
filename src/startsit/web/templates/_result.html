@@ -57,6 +57,13 @@
     <p class="disagreement"><strong>Differs from the baseline ({{ names[decision.baseline_pick] }}):</strong>
       {{ decision.baseline_disagreement|link_citations(packet.item_ids) }}</p>
     {% endif %}
+    {% set crowd = packet.crowd_pick %}
+    {% if crowd and crowd != packet.baseline_pick %}
+    <p class="crowd-note"><strong>The Reddit crowd disagrees with the experts:</strong>
+      fans lean {{ names[crowd] }}, while the expert consensus favors {{ names[packet.baseline_pick] }}
+      ({% for p in packet.players %}{{ p.name }} {{ p.crowd_start }} start / {{ p.crowd_sit }} sit{{ ", " if not loop.last }}{% endfor %}).
+      {% if decision.source != "baseline" %}The AI sided with {{ "the crowd" if decision.pick == crowd else "the experts" if decision.pick == packet.baseline_pick else names[decision.pick] }}.{% endif %}</p>
+    {% endif %}
   </div>
 </article>
 

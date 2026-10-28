@@ -23,6 +23,7 @@ from zoneinfo import ZoneInfo
 
 from startsit import baseline
 from startsit.db import (
+    CrowdVoteRow,
     Database,
     GameRow,
     InjuryRow,
@@ -41,12 +42,15 @@ from startsit.scoring import LABELS, SCORINGS, Scoring, column, reception_discou
 
 NFLVERSE_URL = "https://github.com/nflverse/nflverse-data"
 
-EvidenceKind = Literal["availability", "consensus", "projection", "matchup", "usage", "injury", "news"]
+EvidenceKind = Literal["availability", "consensus", "projection", "matchup", "usage", "injury", "news", "crowd"]
 
 NEWS_LOOKBACK = timedelta(days=7)
 NEWS_PER_PLAYER = 3
 EASTERN = ZoneInfo("America/New_York")  # the schedule's game days and kickoff times are US Eastern
 GAME_LENGTH = timedelta(hours=4)  # kickoff to final whistle, with margin
+CROWD_REASONS = 2  # stated reasons quoted in the crowd item, newest first
+# The crowd pick needs a lead of this many net votes (start minus sit) over every other player.
+CROWD_MIN_LEAD = 2
 
 
 @dataclass(frozen=True)
@@ -77,6 +81,11 @@ class PlayerContext:
     missed_games: int  # games the player's team played since the player last played (0 if unknown)
     projection: ProjectionRow | None = None  # FantasyPros per-format projection
     news_status: NewsFactRow | None = None  # newest news fact this week that states a game status
+    crowd: list[CrowdVoteRow] = field(default_factory=list)  # this week's Reddit votes, newest first
+
+    @property
+    def crowd_starts(self) -> int:
+        return sum(v["verdict"] == "start" for v in self.crowd)
 
     @property
     def exp_receptions(self) -> float | None:
@@ -124,6 +133,12 @@ class PlayerEvidence:
     game_status: str | None = None  # freshest of news and injury report, lowercase
     kickoff: datetime | None = None  # UTC; None if unknown or no game
     game_started: bool = False  # kicked off before the question was asked (locked in most leagues)
+    crowd_start: int = 0  # this week's Reddit start/sit votes
+    crowd_sit: int = 0
+
+    @property
+    def crowd_net(self) -> int:
+        return self.crowd_start - self.crowd_sit
 
     def items_of(self, kind: EvidenceKind) -> list[EvidenceItem]:
         return [i for i in self.items if i.kind == kind]
@@ -151,6 +166,13 @@ class EvidencePacket:
 
     def player(self, player_id: str) -> PlayerEvidence:
         return next(p for p in self.players if p.player_id == player_id)
+
+    @property
+    def crowd_pick(self) -> str | None:
+        """The player the Reddit crowd favors: net votes ahead of everyone else by CROWD_MIN_LEAD, else None."""
+        ranked = sorted(self.players, key=lambda p: p.crowd_net, reverse=True)
+        lead = ranked[0].crowd_net - ranked[1].crowd_net
+        return ranked[0].player_id if lead >= CROWD_MIN_LEAD else None
 
     def verdict(self) -> str:
         leaders = baseline.leaders([p.score for p in self.players])
@@ -181,6 +203,8 @@ class EvidencePacket:
                 game_status=p.get("game_status"),
                 kickoff=datetime.fromisoformat(p["kickoff"]) if p.get("kickoff") else None,
                 game_started=p.get("game_started", False),
+                crowd_start=p.get("crowd_start", 0),
+                crowd_sit=p.get("crowd_sit", 0),
             )
             for p in data["players"]
         ]
@@ -280,6 +304,7 @@ def load_context(db: Database, player_id: str, q: Question) -> PlayerContext:
     last_game_over = game_over_by(last_game) if last_game else None
     status_since = max(since, utc_iso(last_game_over)) if last_game_over else since
     news_status = db.latest_news_status(player_id, status_since, until)
+    crowd = db.crowd_votes(player_id, status_since, until)  # this week's threads, not last week's
     if news_status and news_status not in news:
         news = sorted([*news, news_status], key=lambda n: n["published_at"], reverse=True)
     return PlayerContext(
@@ -295,6 +320,7 @@ def load_context(db: Database, player_id: str, q: Question) -> PlayerContext:
         missed_games=missed,
         projection=db.latest_projection(player_id, q.season, q.week, through_day=asked_on),
         news_status=news_status,
+        crowd=crowd,
     )
 
 
@@ -463,7 +489,23 @@ def news_facts(ctx: PlayerContext, q: Question) -> list[Fact]:
     ]
 
 
-# Order here is the order facts appear in the packet. Add new signals (e.g. Reddit) here.
+def crowd_facts(ctx: PlayerContext, q: Question) -> list[Fact]:
+    if not ctx.crowd:
+        return []
+    starts = ctx.crowd_starts
+    reasons = list(dict.fromkeys(f'"{v["reason"]}" ({v["verdict"]})' for v in ctx.crowd if v["reason"]))
+    quoted = f"; reasons given: {', '.join(reasons[:CROWD_REASONS])}" if reasons else ""
+    return [
+        Fact(
+            "crowd",
+            f"Reddit r/fantasyfootball Who Do I Start threads this week: {starts} start / "
+            f"{len(ctx.crowd) - starts} sit (fans' opinions, one vote per comment){quoted}",
+            ctx.crowd[0]["url"],
+        )
+    ]
+
+
+# Order here is the order facts appear in the packet. Add new signals here.
 ITEM_BUILDERS: tuple[Callable[[PlayerContext, Question], list[Fact]], ...] = (
     availability_facts,
     consensus_facts,
@@ -471,6 +513,7 @@ ITEM_BUILDERS: tuple[Callable[[PlayerContext, Question], list[Fact]], ...] = (
     usage_facts,
     injury_facts,
     news_facts,
+    crowd_facts,
 )
 
 
@@ -507,6 +550,8 @@ def build_packet(
             game_status=inp.game_status,
             kickoff=start,
             game_started=start is not None and start <= q.as_of,
+            crowd_start=ctx.crowd_starts,
+            crowd_sit=len(ctx.crowd) - ctx.crowd_starts,
         )
         for build in ITEM_BUILDERS:
             for fact in build(ctx, q):

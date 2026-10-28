@@ -36,6 +36,7 @@ def rec(rec_id, players, pick, baseline_pick=None, scoring="ppr", source="llm", 
             {"players": [{"player_id": p, "name": f"Player {p}", "team": t} for p, t in players.items()]}
         ),
         visitor="v1",
+        crowd_pick=None,
     )
     return row | kw
 
@@ -120,7 +121,7 @@ def test_score_pending_scores_only_finished_matchups_once(week):
     week.upsert(
         "recommendations",
         [
-            rec("done", {"A": "PHI", "B": "DAL"}, pick="B", baseline_pick="A"),
+            rec("done", {"A": "PHI", "B": "DAL"}, pick="B", baseline_pick="A", crowd_pick="A"),
             rec("waiting", {"A": "PHI", "J": "NYJ"}, pick="A"),
         ],
     )
@@ -128,7 +129,7 @@ def test_score_pending_scores_only_finished_matchups_once(week):
     [row] = week.query("SELECT * FROM evaluations")
     assert json.loads(row["points_json"]) == {"A": 20.0, "B": 12.0}
     assert (row["top_scorer"], row["pick_hit"], row["baseline_hit"]) == ("A", 0, 1)
-    assert (row["consensus_pick"], row["consensus_hit"]) == ("B", 0)
+    assert (row["consensus_pick"], row["consensus_hit"], row["crowd_hit"]) == ("B", 0, 1)
     assert row["scored_at"] == "2026-10-27T12:00:00+00:00"
     assert evaluate.score_pending(week, NOW) == 0  # nothing new; "waiting" stays until NYJ's game is in
 
@@ -145,9 +146,9 @@ def test_report_compares_the_picks_on_the_matchups_the_ai_answered(week):
     week.upsert(
         "recommendations",
         [
-            rec("ai-right-override", ab, pick="A", baseline_pick="B", confidence="high"),
-            rec("ai-wrong", ab, pick="B", baseline_pick="B", source="cache", confidence="low"),
-            rec("no-ai", ab, pick="B", source="baseline"),  # counted as a matchup, not in the rates
+            rec("ai-right-override", ab, pick="A", baseline_pick="B", confidence="high", crowd_pick="A"),
+            rec("ai-wrong", ab, pick="B", baseline_pick="B", source="cache", confidence="low"),  # no crowd lean
+            rec("no-ai", ab, pick="B", source="baseline", crowd_pick="B"),  # counted as a matchup, not in the rates
             rec("bench", ab, pick="A", visitor=evaluate.BENCHMARK),
             rec("backfill", ab, pick="B", visitor=evaluate.BACKFILL),
         ],
@@ -159,6 +160,7 @@ def test_report_compares_the_picks_on_the_matchups_the_ai_answered(week):
     assert (str(users.baseline_all), str(users.consensus_all)) == ("0/3 (0%)", "0/3 (0%)")
     assert (str(users.ai), str(users.baseline), str(users.consensus)) == ("1/2 (50%)", "0/2 (0%)", "0/2 (0%)")
     assert str(users.overrides) == "1/1 (100%)"
+    assert (str(users.crowd), str(users.crowd_all)) == ("1/1 (100%)", "1/2 (50%)")  # only where it leaned
     assert (str(users.by_confidence["high"]), str(users.by_confidence["medium"])) == ("1/1 (100%)", "-")
     assert report.weeks["users"][7].matchups == 3
     assert str(report.totals["benchmark"].ai) == "1/1 (100%)"
@@ -171,6 +173,7 @@ def test_report_compares_the_picks_on_the_matchups_the_ai_answered(week):
         1,
     )
     assert override.points == {"Player A": 20.0, "Player B": 12.0} and override.overrode
+    assert (override.crowd_pick, override.crowd_hit) == ("Player A", 1)
     assert report.overrides("benchmark") == []  # it agreed with the baseline
     assert len(report.matchups["users"]) == 3
     no_ai = next(m for m in report.matchups["users"] if m.rec_id == "no-ai")
@@ -178,7 +181,8 @@ def test_report_compares_the_picks_on_the_matchups_the_ai_answered(week):
 
     text = evaluate.report_text(report)
     assert "users:\n    week 7: 2 AI-answered | AI 1/2 (50%) | baseline 0/2 (0%)" in text
-    assert "|| all 3: baseline 0/3 (0%) | consensus 0/3 (0%)" in text
+    assert "| crowd 1/1 (100%) | AI overrides" in text
+    assert "|| all 3: baseline 0/3 (0%) | consensus 0/3 (0%) | crowd 1/2 (50%)" in text
     assert (
         "benchmark:" in text
         and "backfill:" in text

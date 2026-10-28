@@ -122,6 +122,7 @@ button {
 .factors { margin: 0 0 0.5rem; padding-left: 1.2rem; }
 .factors li { margin-bottom: 0.3rem; }
 .disagreement { font-size: 0.95rem; }
+.crowd-note { font-size: 0.9rem; background: var(--accent-soft); padding: 0.5rem 0.75rem; border-radius: 4px; }
 .explain { margin-top: 0.5rem; font-size: 0.85rem; }
 .explain summary { cursor: pointer; color: var(--accent); }
 .explain p { margin: 0.4rem 0; color: var(--muted); }

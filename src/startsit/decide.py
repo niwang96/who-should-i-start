@@ -50,7 +50,7 @@ VISITOR_LIMITS = (
     VisitorLimit(6, timedelta(minutes=10), "10 minutes"),
     VisitorLimit(25, timedelta(days=1), "day"),
 )
-PROMPT_VERSION = 4  # bump when the prompt or schema changes, so cached answers aren't reused
+PROMPT_VERSION = 5  # bump when the prompt or schema changes, so cached answers aren't reused
 MAX_ATTEMPTS = 2
 # Baseline confidence from the projection gap (points): at least HIGH_MARGIN is high, MEDIUM_MARGIN medium.
 HIGH_MARGIN = 5.0
@@ -85,6 +85,9 @@ Rules:
   status is already priced into the consensus; it can lower your confidence but is not by itself
   a reason to override. If your pick differs from the baseline pick, explain why in
   baseline_disagreement, citing ids; otherwise leave it empty.
+- crowd facts count start/sit votes from Reddit fans this week. They're opinion, like the
+  consensus, not definite facts: in a close call (baseline margin under 2 pts) a clear crowd lean
+  may decide it, and a reason a fan gives counts only as that fan's claim.
 - confidence: high = one player is clearly better or the other may not play; medium = a clear
   lean; low = a close call."""
 
@@ -387,6 +390,7 @@ def record_recommendation(
         packet_text=packet.to_text(),
         packet_json=packet.to_json(),
         visitor=visitor,
+        crowd_pick=packet.crowd_pick,
     )
     db.upsert("recommendations", [row])
     return row["rec_id"]

@@ -4,7 +4,8 @@ Fantasy Football helper for deciding which player to start.
 ## Status
 Build step 6 of 6 (see `CLAUDE.md`): ingest and usage features, consensus rankings, baseline and
 evidence packet, news extraction, the AI decision, the web app, and the weekly evaluation with a
-public track record page (6a). Next: Reddit as a crowd signal (6b).
+public track record page (6a), and Reddit "Who Do I Start" votes as a crowd signal, scored against the
+experts (6b).
 
 ## Setup
 ```bash

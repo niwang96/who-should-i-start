@@ -1,12 +1,13 @@
 """Step 6a: score every recommendation against what happened, and report hit rates.
 
 A pick hits when the chosen player outscored the other in the question's scoring format.
-Each recommendation is scored for three picks, so the report can show whether each layer
+Each recommendation is scored for four picks, so the report can show whether each layer
 adds value:
 - the pick shown (the AI's, or the baseline's when the AI wasn't used),
 - the code baseline (consensus projection, adjusted for availability and scoring),
 - the raw FantasyPros consensus as of the day asked (better rank within a position, else the
-  higher PPR projection; no availability or scoring adjustments).
+  higher PPR projection; no availability or scoring adjustments),
+- the Reddit crowd's lean, when it had one (`EvidencePacket.crowd_pick`, logged when asked).
 
 Actual points come from the nflverse weekly stats the daily ingest loads. A player with no
 stats scores 0 once his team's game is in the data (or his team was on bye); until then the
@@ -106,6 +107,7 @@ def evaluate(db: Database, rec: RecommendationRow, now: datetime) -> EvaluationR
         baseline_hit=hit(rec["baseline_pick"], points),
         consensus_pick=consensus,
         consensus_hit=hit(consensus, points),
+        crowd_hit=hit(rec["crowd_pick"], points),
     )
 
 
@@ -148,16 +150,19 @@ class Summary:
     """Hit rates for a set of scored recommendations.
 
     The AI, baseline and consensus are compared on the same matchups: the ones the AI answered.
-    The baseline and consensus are also scored on every matchup (`*_all`).
+    The baseline and consensus are also scored on every matchup (`*_all`). The crowd is scored
+    only where it had a pick, so its rates count fewer matchups.
     """
 
     matchups: int = 0
     ai_answered: int = 0
     baseline_all: Rate = field(default_factory=Rate)
     consensus_all: Rate = field(default_factory=Rate)
+    crowd_all: Rate = field(default_factory=Rate)
     ai: Rate = field(default_factory=Rate)
     baseline: Rate = field(default_factory=Rate)
     consensus: Rate = field(default_factory=Rate)
+    crowd: Rate = field(default_factory=Rate)
     overrides: Rate = field(default_factory=Rate)  # AI picks that went against the baseline: was the AI right?
     by_confidence: dict[str, Rate] = field(default_factory=lambda: {c: Rate() for c in CONFIDENCES})
 
@@ -165,12 +170,14 @@ class Summary:
         self.matchups += 1
         self.baseline_all.add(row["baseline_hit"])
         self.consensus_all.add(row["consensus_hit"])
+        self.crowd_all.add(row["crowd_hit"])
         if row["source"] not in AI_SOURCES:
             return
         self.ai_answered += 1
         self.ai.add(row["pick_hit"])
         self.baseline.add(row["baseline_hit"])
         self.consensus.add(row["consensus_hit"])
+        self.crowd.add(row["crowd_hit"])
         if row["pick"] != row["baseline_pick"]:
             self.overrides.add(row["pick_hit"])
         if row["confidence"] in self.by_confidence:
@@ -192,6 +199,8 @@ class Matchup:
     pick_hit: int | None  # 1/0, None for a tie
     baseline_hit: int | None
     consensus_hit: int | None
+    crowd_pick: str | None = None
+    crowd_hit: int | None = None
 
     @property
     def overrode(self) -> bool:
@@ -214,6 +223,8 @@ class Matchup:
             pick_hit=row["pick_hit"],
             baseline_hit=row["baseline_hit"],
             consensus_hit=row["consensus_hit"],
+            crowd_pick=names.get(row["crowd_pick"]) if row["crowd_pick"] else None,
+            crowd_hit=row["crowd_hit"],
         )
 
 
@@ -253,7 +264,8 @@ def build_report(db: Database, season: int) -> Report:
 def report_text(report: Report) -> str:
     lines = [
         f"Season {report.season} track record. On the matchups the AI answered: AI, baseline, consensus, "
-        "and the AI's picks against the baseline. On all matchups: baseline, consensus."
+        "Reddit crowd (where it leaned), and the AI's picks against the baseline. On all matchups: "
+        "baseline, consensus, crowd."
     ]
     for group in ("users", *GROUPS.values()):
         if group not in report.totals:
@@ -264,8 +276,8 @@ def report_text(report: Report) -> str:
         for label, s in zip(rows, summaries, strict=True):
             lines.append(
                 f"  {label:>8}: {s.ai_answered} AI-answered | AI {s.ai} | baseline {s.baseline} "
-                f"| consensus {s.consensus} | AI overrides {s.overrides} || all {s.matchups}: "
-                f"baseline {s.baseline_all} | consensus {s.consensus_all}"
+                f"| consensus {s.consensus} | crowd {s.crowd} | AI overrides {s.overrides} || all {s.matchups}: "
+                f"baseline {s.baseline_all} | consensus {s.consensus_all} | crowd {s.crowd_all}"
             )
         conf = report.totals[group].by_confidence
         lines.append("  AI by confidence: " + ", ".join(f"{c} {conf[c]}" for c in CONFIDENCES))
