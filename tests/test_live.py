@@ -17,6 +17,7 @@ Each test skips when its key isn't set, so forks and local runs without keys sti
 from __future__ import annotations
 
 import os
+import re
 import time
 import urllib.error
 from datetime import UTC, datetime
@@ -200,3 +201,54 @@ def test_reddit_is_readable_from_this_runner():
     report = "\n".join(f"{status}  <- {url}" for url, status in results.items())
     print(report)
     assert any(status.startswith("200") for status in results.values()), f"every route blocked:\n{report}"
+
+
+ATOM = "{http://www.w3.org/2005/Atom}"
+# r/fantasyfootball's daily "Who Do I Start" threads are titled like "Official: [WDIS RB] - Wed 10/28/2026".
+WDIS_SEARCH = "https://www.reddit.com/r/fantasyfootball/search.rss?q=title%3AWDIS&restrict_sr=1&sort=new&limit=10"
+REDDIT_SPACING = 60  # seconds between Reddit requests: unauthenticated RSS is tightly rate-limited
+
+
+def reddit_entries(url: str) -> tuple[str, list[dict[str, str]]]:
+    """(status, Atom entries as {title, link, content}) for one feed; never raises."""
+    from defusedxml import ElementTree
+
+    try:
+        root = ElementTree.fromstring(get_bytes(url))
+    except urllib.error.HTTPError as e:
+        limits = {k: v for k, v in e.headers.items() if k.lower().startswith(("retry-after", "x-ratelimit"))}
+        return f"{e.code} {e.reason} {limits}", []
+    except (OSError, ElementTree.ParseError) as e:
+        return f"{type(e).__name__}: {e}", []
+    entries = [
+        {
+            "title": e.findtext(f"{ATOM}title", ""),
+            "link": (e.find(f"{ATOM}link").get("href", "") if e.find(f"{ATOM}link") is not None else ""),
+            "content": e.findtext(f"{ATOM}content", ""),
+        }
+        for e in root.iter(f"{ATOM}entry")
+    ]
+    return "200", entries
+
+
+def test_reddit_threads_and_comments_via_rss():
+    # Step 6b's path: find the newest WDIS thread with the search feed, then read its comments feed.
+    status, threads = reddit_entries(WDIS_SEARCH)
+    print(f"search: {status}, {len(threads)} threads")
+    for t in threads[:5]:
+        print(f"  {t['title']}  <- {t['link']}")
+    assert status == "200" and threads, f"search feed: {status}"
+    thread = threads[0]
+    assert re.search(r"/comments/\w+/", thread["link"]), thread["link"]
+    time.sleep(REDDIT_SPACING)
+    status, comments = reddit_entries(thread["link"].rstrip("/") + "/.rss?limit=50")
+    print(f"comments of {thread['title']!r}: {status}, {len(comments)} entries")
+    for c in comments[1:4]:  # the first entry is the post itself
+        text = re.sub(r"<[^>]+>", " ", c["content"])
+        print("  -", " ".join(text.split())[:160])
+    if not status.startswith("200"):  # try the old.reddit host once before giving up
+        time.sleep(REDDIT_SPACING)
+        old = thread["link"].replace("www.reddit.com", "old.reddit.com").rstrip("/") + "/.rss?limit=50"
+        status, comments = reddit_entries(old)
+        print(f"old.reddit comments: {status}, {len(comments)} entries")
+    assert status == "200" and len(comments) > 1, f"comments feed: {status}"
