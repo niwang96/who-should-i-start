@@ -34,6 +34,7 @@ from startsit.db import Database, utc_now
 from startsit.decide import HIGH_MARGIN, MEDIUM_MARGIN, Decision, decide, decide_llm, record_recommendation
 from startsit.evaluate import CONFIDENCES, Report, build_report, group_of
 from startsit.evidence import (
+    CROWD_MIN_LEAD,
     EASTERN,
     EvidencePacket,
     PlayerLookupError,
@@ -81,6 +82,7 @@ KIND_LABELS = {
     "usage": "Usage",
     "injury": "Injury report",
     "news": "News",
+    "crowd": "Reddit crowd",
 }
 
 # Same-origin only: htmx and the stylesheet are served from /static.
@@ -183,6 +185,7 @@ def create_app(
         high_margin=HIGH_MARGIN,
         medium_margin=MEDIUM_MARGIN,
         confidences=CONFIDENCES,
+        crowd_min_lead=CROWD_MIN_LEAD,
     )
     templates.env.filters["eastern"] = eastern_time
     templates.env.filters["link_citations"] = link_citations

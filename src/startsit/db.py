@@ -272,6 +272,7 @@ class RecommendationRow(TypedDict):
     packet_text: str  # exactly what the LLM saw (or would have)
     packet_json: str  # the packet's structure: per-player scores and evidence items with ids and links
     visitor: str | None  # salted hash of the IP; None outside the web app
+    crowd_pick: str | None  # the Reddit crowd's lean (EvidencePacket.crowd_pick); None if it has none
 
 
 class EvaluationRow(TypedDict):
@@ -287,6 +288,7 @@ class EvaluationRow(TypedDict):
     baseline_hit: int | None
     consensus_pick: str | None  # raw FantasyPros consensus; None when it can't choose
     consensus_hit: int | None
+    crowd_hit: int | None  # None when the crowd had no pick (or a tie)
 
 
 # Postgres REAL is single precision, so floats are DOUBLE PRECISION (same meaning in SQLite).
@@ -813,7 +815,8 @@ class Database:
     def scored_recommendations(self, season: int) -> list[dict[str, Any]]:
         """Every scored recommendation of the season: the evaluation joined with what was shown."""
         return self.query(
-            "SELECT e.*, r.scoring, r.pick, r.baseline_pick, r.confidence, r.source, r.visitor, r.packet_json "
+            "SELECT e.*, r.scoring, r.pick, r.baseline_pick, r.confidence, r.source, r.visitor, r.packet_json, "
+            "r.crowd_pick "
             "FROM evaluations e JOIN recommendations r ON r.rec_id = e.rec_id "
             "WHERE e.season = ? ORDER BY e.week, r.created_at",
             (season,),

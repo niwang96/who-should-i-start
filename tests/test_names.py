@@ -41,3 +41,14 @@ def test_candidates_for_user_lookups():
     assert ids(m.candidates("Puka", "NE")) == []
     assert ids(m.candidates("Ryan Miller")) == ["MILLER_DAL", "MILLER_NE"]
     assert m.candidates("  ") == [] and m.candidates("...") == []
+
+
+def test_match_one_word_finds_a_unique_first_or_last_name():
+    m = PlayerMatcher(PLAYERS)
+    assert m.match_one_word("Nacua") == m.match_one_word("puka") == "NACUA"
+    assert m.match_one_word("Walker") == "WALKER"  # the suffix isn't the last name
+    assert m.match_one_word("Brown") is None  # A.J. Brown and Amon-Ra St. Brown
+    assert m.match_one_word("Brown", "DET") == "STBROWN"
+    assert m.match_one_word("Miller") is None and m.match_one_word("Miller", "DAL") == "MILLER_DAL"
+    assert m.match_one_word("Puka Nacua") is None  # full names go through match()
+    assert m.match_one_word("") is None and m.match_one_word("Ra") is None  # only first and last names

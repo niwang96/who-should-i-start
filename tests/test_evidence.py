@@ -414,3 +414,45 @@ def test_a_stored_packet_reads_back_exactly(seeded):
     packet = build_packet(seeded, ["NACUA", "SMITH"], "half", 2026, 7, as_of=datetime(2026, 10, 24, tzinfo=UTC))
     again = EvidencePacket.from_json(packet.to_json())
     assert again == packet and again.to_text() == packet.to_text()
+
+
+def vote(comment_id, player_id, verdict, published_at, reason=None):
+    url = f"https://www.reddit.com/r/fantasyfootball/comments/t/x/{comment_id}/"
+    return dict(
+        comment_id=comment_id, player_id=player_id, verdict=verdict, reason=reason, published_at=published_at, url=url
+    )
+
+
+def test_crowd_votes_from_this_weeks_threads_become_one_item_and_a_crowd_pick(seeded):
+    from startsit.evidence import EvidencePacket
+
+    seeded.upsert("games", [dict(game(6, "LV", "LA"), gameday="2026-10-18")])  # NACUA's last game
+    seeded.upsert(
+        "crowd_votes",
+        [
+            vote("c0", "NACUA", "sit", "2026-10-18T12:00:00+00:00"),  # before last week's game: last week's thread
+            vote("c1", "NACUA", "start", "2026-10-21T12:00:00+00:00", "safe floor"),
+            vote("c2", "NACUA", "start", "2026-10-22T12:00:00+00:00"),
+            vote("c3", "NACUA", "sit", "2026-10-22T13:00:00+00:00", "tough matchup"),
+            vote("c4", "NACUA", "start", "2026-10-23T09:00:00+00:00", "safe floor"),
+            vote("c5", "NACUA", "start", "2026-10-23T11:00:00+00:00"),
+            vote("c6", "NACUA", "sit", "2026-10-24T09:00:00+00:00"),  # after the question
+            vote("c7", "SMITH", "start", "2026-10-22T12:00:00+00:00"),
+        ],
+    )
+    as_of = datetime(2026, 10, 23, 12, tzinfo=UTC)
+    p = build_packet(seeded, ["NACUA", "SMITH"], "ppr", 2026, 7, as_of=as_of)
+    nacua, smith = p.players
+    [item] = nacua.items_of("crowd")
+    assert item.text == (
+        "Reddit r/fantasyfootball Who Do I Start threads this week: 4 start / 1 sit (fans' opinions, one vote "
+        'per comment); reasons given: "safe floor" (start), "tough matchup" (sit)'
+    )
+    assert item.source_url.endswith("/c5/")  # the newest vote
+    assert (nacua.crowd_start, nacua.crowd_sit, smith.crowd_start) == (4, 1, 1)
+    assert p.crowd_pick == "NACUA"  # net 3 vs 1: a lead of CROWD_MIN_LEAD
+    assert EvidencePacket.from_json(p.to_json()).crowd_pick == "NACUA"
+
+    seeded.upsert("crowd_votes", [vote("c8", "SMITH", "start", "2026-10-22T14:00:00+00:00")])
+    assert build_packet(seeded, ["NACUA", "SMITH"], "ppr", 2026, 7, as_of=as_of).crowd_pick is None  # 3 vs 2
+    assert build_packet(seeded, ["HALL", "GENO"], "ppr", 2026, 7, as_of=as_of).crowd_pick is None  # no votes

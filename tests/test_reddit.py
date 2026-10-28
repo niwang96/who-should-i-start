@@ -187,3 +187,32 @@ def test_the_ingest_step_fetches_when_due_and_extracts_when_the_ai_is_available(
         counts = run_reddit(db, 2026, datetime.now(UTC))
     assert counts == {"reddit_comments": 0, "reddit_extracted": 4, "crowd_votes": 2, "llm_calls": 1}
     assert len(fetched) == 1
+
+
+def test_a_one_word_name_matches_a_unique_ranked_player(db):
+    from test_cli import _week
+    from test_evidence import ranking
+
+    seed_comments(db)
+    db.upsert("players", [player("KICK", "Jake Moore", "K", "DAL")])
+    db.upsert("player_weeks", [_week("COOP", 7)])  # sets the latest season
+    db.upsert(
+        "rankings",
+        [ranking("COOP", 9.0), ranking("SMITH1", 8.0), ranking("KICK", 7.0, position="K")],
+    )
+    response = {
+        "votes": [
+            {"comment_id": "C2", "player": "Cooper", "team": "", "verdict": "start", "reason": ""},
+            {"comment_id": "C2", "player": "Omar", "team": "", "verdict": "sit", "reason": ""},  # same comment
+            {"comment_id": "C3", "player": "Smith", "team": "", "verdict": "start", "reason": ""},  # one ranked
+            {"comment_id": "C3", "player": "Moore", "team": "", "verdict": "start", "reason": ""},  # no ranked WR
+        ]
+    }
+    result = reddit_extract.extract_votes(db, BudgetedLLM(FakeProvider(responses=[response]), db, "reddit", 5), NOW)
+    assert result.votes == 2
+    rows = db.query("SELECT player_id, verdict FROM crowd_votes ORDER BY player_id")
+    assert rows == [{"player_id": "COOP", "verdict": "sit"}, {"player_id": "SMITH1", "verdict": "start"}]
+
+
+def test_no_ranked_pool_without_data(db):
+    assert reddit_extract.ranked_players(db, []) == []

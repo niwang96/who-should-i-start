@@ -208,7 +208,7 @@ def test_track_record_page(path, monkeypatch):
         db.upsert(
             "recommendations",
             [
-                rec("u1", ab, pick="A", baseline_pick="B", confidence="high"),
+                rec("u1", ab, pick="A", baseline_pick="B", confidence="high", crowd_pick="A"),
                 rec("b1", ab, pick="B", visitor="benchmark"),
                 rec("f1", ab, pick="A", source="baseline", visitor="benchmark-backfill"),
             ],
@@ -221,6 +221,8 @@ def test_track_record_page(path, monkeypatch):
     assert "AI started <strong>Player A</strong>" in page and "(20.0)</span> over Player B" in page
     assert "Right 100% of the time (1 of 1)" in page  # the users' override
     assert "The AI didn't answer any of these yet" in page  # the backfill had only baseline picks
+    assert '<span class="label">Reddit crowd</span>' in page and page.count('<th scope="col">Crowd</th>') == 2
+    assert page.count("no lean") == 0 and "start/sit votes from r/fantasyfootball" in page
     assert client.get("/record").text.count("Nothing scored yet") == 1  # the first app still serves its cache
 
 
@@ -301,3 +303,30 @@ def test_why_page_for_an_unknown_matchup(path, rec_id):
     r = client_for(path).get(f"/record/{rec_id}")
     assert r.status_code == 404 and "That matchup isn't in the track record." in r.text
     assert client_for(path).get("/record/../etc").status_code == 404  # never reaches the route
+
+
+def test_the_answer_says_when_the_reddit_crowd_disagrees_with_the_experts(path):
+    from test_evidence import vote
+
+    with Database(path) as db:
+        db.upsert("crowd_votes", [vote(f"c{i}", "B", "start", "2026-10-22T12:00:00+00:00") for i in range(3)])
+    r = ask(client_for(path, FakeProvider(responses=[ANSWER])), "Alpha Back", "Bravo Back", hx=True)
+    assert "The Reddit crowd disagrees with the experts:</strong>" in r.text
+    assert "fans lean Bravo Back, while the expert consensus favors Alpha Back" in r.text
+    assert "(Alpha Back 0 start / 0 sit, Bravo Back 3 start / 0 sit)" in r.text
+    assert "The AI sided with the experts." in r.text
+    assert '<div class="kind">Reddit crowd</div>' in r.text
+    with Database(path) as db:
+        assert db.query("SELECT crowd_pick FROM recommendations") == [{"crowd_pick": "B"}]
+
+    r = ask(client_for(path), "Alpha Back", "Bravo Back", scoring="ppr", hx=True)  # no AI: the baseline pick
+    assert "fans lean Bravo Back" in r.text and "The AI sided" not in r.text
+
+
+def test_no_crowd_note_when_the_crowd_agrees_or_has_no_lean(path):
+    from test_evidence import vote
+
+    with Database(path) as db:
+        db.upsert("crowd_votes", [vote(f"c{i}", "A", "start", "2026-10-22T12:00:00+00:00") for i in range(3)])
+    r = ask(client_for(path), "Alpha Back", "Bravo Back", hx=True)
+    assert "crowd-note" not in r.text and "3 start / 0 sit" in r.text  # the evidence still shows the votes
