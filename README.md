@@ -66,7 +66,11 @@ GitHub Actions runs it (`.github/workflows/ingest.yml`), writing to Supabase whe
 `DATABASE_URL` repository secret is set (otherwise it uploads a SQLite file as an artifact).
 Every scheduled run is a news run (below) that also does this daily refresh when it's due (none
 since the latest 10:00 UTC), because GitHub delays or drops scheduled runs when it's busy: the
-first run to get through after 10:00 UTC does it.
+first run to get through after 10:00 UTC does it. Because GitHub drops so many scheduled runs,
+cron-job.org also starts the workflow on time through the API (`workflow_dispatch` with
+`only: news`; hourly, and every 30 minutes on Sunday mornings), using a fine-grained token that
+can only run this repo's Actions. GitHub's own schedule stays as a backup; duplicate runs skip
+work that's already done.
 
 Tables (QB/RB/WR/TE, regular season only):
 - `players` — GSIS id, name, position, current roster team; includes rostered players who
