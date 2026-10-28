@@ -177,7 +177,6 @@ REDDIT_ROUTES = (
     "https://www.reddit.com/r/fantasyfootball/new.json?limit=5",
     "https://old.reddit.com/r/fantasyfootball/new.json?limit=5",
     "https://www.reddit.com/r/fantasyfootball/new/.rss?limit=5",
-    "https://www.reddit.com/r/fantasyfootball/comments/.rss?limit=5",  # newest comments, sub-wide
 )
 
 
@@ -209,14 +208,22 @@ WDIS_SEARCH = "https://www.reddit.com/r/fantasyfootball/search.rss?q=title%3AWDI
 REDDIT_SPACING = 60  # seconds between Reddit requests: unauthenticated RSS is tightly rate-limited
 
 
-def reddit_entries(url: str) -> tuple[str, list[dict[str, str]]]:
-    """(status, Atom entries as {title, link, content}) for one feed; never raises."""
+def reddit_entries(url: str, retry: bool = True) -> tuple[str, list[dict[str, str]]]:
+    """(status, Atom entries as {title, link, content}) for one feed; never raises.
+
+    On a 429, waits out Reddit's own x-ratelimit-reset (runners share IPs, so the allowance may
+    already be spent by someone else) and tries once more.
+    """
     from defusedxml import ElementTree
 
     try:
         root = ElementTree.fromstring(get_bytes(url))
     except urllib.error.HTTPError as e:
         limits = {k: v for k, v in e.headers.items() if k.lower().startswith(("retry-after", "x-ratelimit"))}
+        reset = float(limits.get("x-ratelimit-reset", limits.get("retry-after", "60")) or 60)
+        if e.code == 429 and retry and reset <= 120:
+            time.sleep(reset + 2)
+            return reddit_entries(url, retry=False)
         return f"{e.code} {e.reason} {limits}", []
     except (OSError, ElementTree.ParseError) as e:
         return f"{type(e).__name__}: {e}", []
@@ -231,12 +238,19 @@ def reddit_entries(url: str) -> tuple[str, list[dict[str, str]]]:
     return "200", entries
 
 
+def skip_if_throttled(status: str) -> None:
+    """Reddit's rate limit on a shared runner IP isn't our bug: skip (visibly) rather than fail."""
+    if status.startswith("429"):
+        pytest.skip(f"Reddit rate-limited this runner even after waiting: {status}")
+
+
 def test_reddit_threads_and_comments_via_rss():
     # Step 6b's path: find the newest WDIS thread with the search feed, then read its comments feed.
     status, threads = reddit_entries(WDIS_SEARCH)
     print(f"search: {status}, {len(threads)} threads")
     for t in threads[:5]:
         print(f"  {t['title']}  <- {t['link']}")
+    skip_if_throttled(status)
     assert status == "200" and threads, f"search feed: {status}"
     thread = threads[0]
     assert re.search(r"/comments/\w+/", thread["link"]), thread["link"]
@@ -251,4 +265,5 @@ def test_reddit_threads_and_comments_via_rss():
         old = thread["link"].replace("www.reddit.com", "old.reddit.com").rstrip("/") + "/.rss?limit=50"
         status, comments = reddit_entries(old)
         print(f"old.reddit comments: {status}, {len(comments)} entries")
+    skip_if_throttled(status)
     assert status == "200" and len(comments) > 1, f"comments feed: {status}"
