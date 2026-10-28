@@ -147,3 +147,10 @@ def test_an_invalid_answer_is_logged_and_its_retry_counts_toward_the_pause(week8
     assert sleeps == [2 * benchmark.CALL_SPACING, benchmark.CALL_SPACING]  # two calls, then one
     sources = [r["source"] for r in week8.query("SELECT source FROM recommendations ORDER BY created_at")]
     assert sorted(sources) == ["baseline", "llm", "llm"]  # the AI answered badly: that counts against it
+
+
+def test_the_daily_budgets_fit_geminis_free_tier_and_a_whole_benchmark_set():
+    from startsit.llm import DAILY_BUDGETS, GEMINI_DAILY_REQUESTS
+
+    assert sum(DAILY_BUDGETS.values()) <= GEMINI_DAILY_REQUESTS - 5  # headroom for count-then-call overshoot
+    assert DAILY_BUDGETS["benchmark"] >= sum(benchmark.PAIRS.values())

@@ -29,7 +29,7 @@ from typing import Any, Literal, cast
 
 from startsit import baseline
 from startsit.db import Database, DecisionCacheRow, RecommendationRow, utc_iso
-from startsit.evidence import EvidencePacket, PlayerLookupError, packet_for_names
+from startsit.evidence import EASTERN, EvidencePacket, PlayerLookupError, packet_for_names
 from startsit.llm import (
     BudgetedLLM,
     LLMError,
@@ -43,14 +43,12 @@ from startsit.scoring import SCORINGS, Scoring
 
 log = logging.getLogger("startsit.decide")
 
-# Of the 500/day Gemini free tier: news gets 60, decisions this, the rest is headroom.
-DECIDE_DAILY_LLM_BUDGET = 370
 # New (uncached) AI answers per visitor; cached answers and baseline picks are unlimited.
 VISITOR_LIMITS = (
     VisitorLimit(6, timedelta(minutes=10), "10 minutes"),
     VisitorLimit(25, timedelta(days=1), "day"),
 )
-PROMPT_VERSION = 5  # bump when the prompt or schema changes, so cached answers aren't reused
+PROMPT_VERSION = 6  # bump when the prompt or schema changes, so cached answers aren't reused
 MAX_ATTEMPTS = 2
 # Baseline confidence from the projection gap (points): at least HIGH_MARGIN is high, MEDIUM_MARGIN medium.
 HIGH_MARGIN = 5.0
@@ -89,7 +87,10 @@ Rules:
   consensus, not definite facts: in a close call (baseline margin under 2 pts) a clear crowd lean
   may decide it, and a reason a fan gives counts only as that fan's claim.
 - confidence: high = one player is clearly better or the other may not play; medium = a clear
-  lean; low = a close call."""
+  lean; low = a close call.
+- Write like a friend who knows fantasy football: short, direct sentences. No dashes as
+  punctuation, and no filler such as "Ultimately", "It's worth noting", "In conclusion",
+  "delve" or "landscape"."""
 
 
 def response_schema(player_keys: list[str]) -> dict[str, Any]:
@@ -146,7 +147,9 @@ class Decision:
     @classmethod
     def from_json(cls, text: str) -> Decision:
         data = json.loads(text)
-        data["factors"] = [Factor(**f) for f in data["factors"]]
+        data["factors"] = [Factor(plain(f["text"]), f["evidence_ids"]) for f in data["factors"]]
+        for name in ("summary", "baseline_disagreement"):
+            data[name] = plain(data.get(name, ""))
         return cls(**data)
 
     def to_text(self, packet: EvidencePacket) -> str:
@@ -175,6 +178,17 @@ def build_prompt(packet: EvidencePacket) -> str:
 
 
 SUMMARY_MAX_CHARS = 900
+# Shown as "the expert-consensus pick" to users, who don't know what the baseline is.
+FALLBACK_PICK = "so this is the expert-consensus pick"
+_DASH = re.compile(r"\s*[\u2014\u2013]\s*")
+
+
+def plain(text: str) -> str:
+    """The model's text with each em or en dash (and its spaces) replaced by a comma: they read as
+    machine-written."""
+    return _DASH.sub(", ", text).strip()
+
+
 _CITED_ID = re.compile(r"\bE\d+\b")
 # A number not glued to letters or a dot, so "E12", "RB26" and "v2" aren't read as numbers.
 _NUMBER = re.compile(r"(?<![\w.])\d+(?:\.\d+)?(?![\w])")
@@ -227,7 +241,7 @@ def validate(raw: Any, packet: EvidencePacket) -> tuple[Decision | None, list[st
     raw_factors = raw.get("factors")
     raw_factors = raw_factors if isinstance(raw_factors, list) else []
     for f in raw_factors:
-        text = str(f.get("text", "")).strip() if isinstance(f, dict) else ""
+        text = plain(str(f.get("text", ""))) if isinstance(f, dict) else ""
         cited = f.get("evidence_ids") if isinstance(f, dict) else None
         # Keep things shaped like ids (the model sometimes "cites" a header line); deduped, in order.
         # A made-up id like E99 is kept here and rejected below.
@@ -243,11 +257,11 @@ def validate(raw: Any, packet: EvidencePacket) -> tuple[Decision | None, list[st
             factors.append(Factor(text, ids))
     if not 2 <= len(raw_factors) <= 3:
         problems.append("give 2 or 3 factors")
-    disagreement = str(raw.get("baseline_disagreement", "")).strip()
+    disagreement = plain(str(raw.get("baseline_disagreement", "")))
     tied = packet.baseline_margin == 0
     if pick is not None and pick != packet.baseline_pick and not tied and not disagreement:
         problems.append("the pick differs from the baseline pick, so baseline_disagreement must explain why")
-    summary = str(raw.get("summary", "")).strip()
+    summary = plain(str(raw.get("summary", "")))
     if not summary:
         problems.append("summary is required")
     elif len(summary) > SUMMARY_MAX_CHARS:
@@ -274,13 +288,22 @@ def validate(raw: Any, packet: EvidencePacket) -> tuple[Decision | None, list[st
     ), []
 
 
+def consensus_reason(packet: EvidencePacket) -> str:
+    """The baseline's reason in plain words, for the fallback answer users see."""
+    scoring = packet.question.label
+    if packet.baseline_margin == 0:
+        return f"The expert consensus projects them even in {scoring} scoring."
+    name = packet.names[packet.baseline_pick]
+    return f"The expert consensus projects {name} {packet.baseline_margin:.1f} pts higher in {scoring} scoring."
+
+
 def baseline_decision(packet: EvidencePacket, note: str) -> Decision:
     """The code baseline as a decision, used when the LLM is unavailable or its answer fails checks."""
     winner = packet.player(packet.baseline_pick)
     ids = [i.id for i in winner.items if i.kind in ("consensus", "projection")] or [i.id for i in winner.items[:1]]
     margin = packet.baseline_margin
     confidence: Confidence = "high" if margin >= HIGH_MARGIN else "medium" if margin >= MEDIUM_MARGIN else "low"
-    factors = [Factor(packet.verdict() + ".", ids)] if ids else []
+    factors = [Factor(consensus_reason(packet), ids)] if ids else []
     return Decision(
         pick=winner.player_id,
         confidence=confidence,
@@ -316,7 +339,14 @@ def with_citations(decision: Decision, packet: EvidencePacket) -> Decision:
 
 def decide_llm(db: Database, visitor: str | None = None) -> BudgetedLLM | None:
     """The budgeted Gemini client for decisions (per visitor in the web app), or None without a key."""
-    return budgeted_gemini(db, "decide", DECIDE_DAILY_LLM_BUDGET, "AI disabled", visitor, VISITOR_LIMITS)
+    return budgeted_gemini(db, "decide", "AI disabled", visitor, VISITOR_LIMITS)
+
+
+def reset_time(now: datetime | None = None) -> str:
+    """When the daily AI budgets reset (midnight UTC), in Eastern time: "8 PM ET"."""
+    midnight = (now or datetime.now(UTC)).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    local = midnight.astimezone(EASTERN)
+    return f"{local.hour % 12 or 12} {local:%p} ET"
 
 
 def decide(db: Database, packet: EvidencePacket, llm: BudgetedLLM | None) -> Decision:
@@ -327,7 +357,7 @@ def decide(db: Database, packet: EvidencePacket, llm: BudgetedLLM | None) -> Dec
         return cap_confidence(with_citations(decision, packet), packet)
 
     if llm is None:
-        return fallback("unavailable", "AI unavailable; showing the baseline pick.")
+        return fallback("unavailable", f"The AI isn't available right now, {FALLBACK_PICK}.")
     model = llm.provider.model
     key = cache_key(packet, model)
     if cached := db.cached_decision(key):
@@ -342,14 +372,17 @@ def decide(db: Database, packet: EvidencePacket, llm: BudgetedLLM | None) -> Dec
         try:
             raw = llm.generate_json(attempt, response_schema(list(player_keys(packet))), SYSTEM_PROMPT)
         except QuotaExceeded:
-            return fallback("daily_limit", "Daily AI limit reached; showing the baseline pick.")
+            return fallback(
+                "daily_limit",
+                f"The AI has used up today's free answers, {FALLBACK_PICK}. They reset at {reset_time()}.",
+            )
         except RateLimited:
-            return fallback("busy", "The AI is busy right now; showing the baseline pick. Ask again in a minute.")
+            return fallback("busy", f"The AI is busy right now, {FALLBACK_PICK}. Try again in a minute.")
         except VisitorLimited as e:
-            return fallback("visitor_limit", f"You've reached the {e}; showing the baseline pick.")
+            return fallback("visitor_limit", f"You've reached the {e}, {FALLBACK_PICK}.")
         except LLMError as e:
             log.warning("decision call failed: %s", e)
-            return fallback("unavailable", "AI unavailable; showing the baseline pick.")
+            return fallback("unavailable", f"The AI isn't available right now, {FALLBACK_PICK}.")
         decision, problems = validate(raw, packet)
         if decision is not None:
             decision = cap_confidence(with_citations(replace(decision, model=model), packet), packet)
@@ -359,7 +392,7 @@ def decide(db: Database, packet: EvidencePacket, llm: BudgetedLLM | None) -> Dec
             db.upsert("decision_cache", [row])
             return decision
         log.warning("decision rejected: %s", "; ".join(problems))
-    return fallback("invalid", "The AI's answer failed validation; showing the baseline pick.")
+    return fallback("invalid", f"The AI's answer didn't pass our fact checks, {FALLBACK_PICK}.")
 
 
 def record_recommendation(

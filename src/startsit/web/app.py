@@ -20,7 +20,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Annotated, Any, cast
+from typing import Annotated, Any, Generic, TypeVar, cast
 from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, Form, Request
@@ -37,7 +37,6 @@ from startsit.evidence import (
     CROWD_MIN_LEAD,
     EASTERN,
     EvidencePacket,
-    PlayerLookupError,
     current_week,
     eastern_time,
     packet_for_names,
@@ -73,7 +72,7 @@ RECORD_GROUPS = [
     {"key": "users", "title": "Questions asked on this site", "about": "Every answer shown here, scored the same way."},
 ]
 
-SOURCE_LABELS = {"llm": "AI pick", "cache": "AI pick", "baseline": "Baseline pick"}
+SOURCE_LABELS = {"llm": "AI pick", "cache": "AI pick", "baseline": "Expert-consensus pick"}
 KIND_LABELS = {
     "availability": "Availability",
     "consensus": "Expert consensus",
@@ -101,6 +100,25 @@ class SecurityHeaders(BaseHTTPMiddleware):
         response = await call_next(request)
         response.headers.update(SECURITY_HEADERS)
         return response
+
+
+K = TypeVar("K")
+V = TypeVar("V")
+
+
+class Expiring(Generic[K, V]):
+    """Values computed on first use and again once `seconds` old, per key, for this process."""
+
+    def __init__(self, seconds: float):
+        self.seconds = seconds
+        self._items: dict[K, tuple[float, V]] = {}
+
+    def get(self, key: K, compute: Callable[[], V]) -> V:
+        now = time.monotonic()
+        item = self._items.get(key)
+        if item is None or now - item[0] >= self.seconds:
+            item = self._items[key] = (now, compute())
+        return item[1]
 
 
 @dataclass
@@ -193,8 +211,8 @@ def create_app(
     templates.env.filters["safe_href"] = safe_href
 
     setup_done = False  # create missing tables once per process, not on every request
-    matcher_cache: dict[str, Any] = {}
-    record_cache: dict[int, tuple[float, Report]] = {}
+    matchers: Expiring[str, PlayerMatcher] = Expiring(PLAYER_CACHE_SECONDS)
+    reports: Expiring[int, Report] = Expiring(RECORD_CACHE_SECONDS)
 
     def get_db() -> Iterator[Database]:
         nonlocal setup_done
@@ -208,9 +226,7 @@ def create_app(
     DB = Annotated[Database, Depends(get_db)]
 
     def matcher(db: Database) -> PlayerMatcher:
-        if time.monotonic() - matcher_cache.get("at", -PLAYER_CACHE_SECONDS) >= PLAYER_CACHE_SECONDS:
-            matcher_cache.update(at=time.monotonic(), matcher=PlayerMatcher(db.all_players()))
-        return cast(PlayerMatcher, matcher_cache["matcher"])
+        return matchers.get("players", lambda: PlayerMatcher(db.all_players()))
 
     def week_info(db: Database) -> WeekInfo | None:
         season = db.latest_season()
@@ -258,7 +274,7 @@ def create_app(
         else:
             try:
                 context |= answer(db, names, chosen, visitor_id(client_address(request)))
-            except (PlayerLookupError, ValueError) as e:
+            except ValueError as e:  # a PlayerLookupError, or a question we can't answer
                 context["error"] = str(e)
             except Exception:  # anything else is our bug or a database hiccup: say so instead of a blank 500
                 log.exception("answering %s failed", names)
@@ -288,12 +304,7 @@ def create_app(
     @app.get("/record", response_class=HTMLResponse)
     def record(request: Request, db: DB) -> HTMLResponse:
         season = db.latest_season()
-        report = None
-        if season is not None:
-            cached = record_cache.get(season)
-            if cached is None or time.monotonic() - cached[0] >= RECORD_CACHE_SECONDS:
-                cached = record_cache[season] = (time.monotonic(), build_report(db, season))
-            report = cached[1]
+        report = reports.get(season, lambda: build_report(db, season)) if season is not None else None
         return templates.TemplateResponse(
             request, "record.html", {"info": week_info(db), "report": report, "groups": RECORD_GROUPS}
         )

@@ -1,7 +1,7 @@
 {% extends "_layout.html" %}
 {% from "_macros.html" import verdict %}
 
-{% block title %}{% if packet %}Why {{ names[decision.pick] }}? — {% endif %}Track record — Who Should I Start?{% endblock %}
+{% block title %}Who Should I Start? - Track Record{% if packet %} - Why {{ names[decision.pick] }}?{% endif %}{% endblock %}
 {% block description %}Why the AI picked one player over another: its reasoning, the evidence it saw, and what actually happened.{% endblock %}
 {% block nav %}<a href="/record">Track record</a>{% endblock %}
 

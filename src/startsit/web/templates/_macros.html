@@ -1,6 +1,6 @@
 {# Shared by the track record pages. #}
 {% macro pct(rate) -%}
-{% if rate.pct is not none %}{{ "%.0f"|format(rate.pct * 100) }}%{% else %}–{% endif %}
+{% if rate.pct is not none %}{{ "%.0f"|format(rate.pct * 100) }}%{% else %}-{% endif %}
 {%- endmacro %}
 
 {% macro of(rate) -%}

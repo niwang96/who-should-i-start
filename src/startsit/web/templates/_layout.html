@@ -3,8 +3,18 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}Who Should I Start? — fantasy football start/sit{% endblock %}</title>
-  <meta name="description" content="{% block description %}Pick between fantasy football players with expert consensus, usage, news and an AI explanation that cites its evidence.{% endblock %}">
+  <title>{% block title %}Who Should I Start?{% endblock %}</title>
+  <meta name="description" content="{% block description %}Stuck between two fantasy football players? An AI weighs the expert consensus, usage, news and Reddit's take, and shows its sources.{% endblock %}">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Who Should I Start?">
+  <meta property="og:title" content="{{ self.title() }}">
+  <meta property="og:description" content="{{ self.description() }}">
+  <meta property="og:image" content="{{ url_for('static', path='og.png') }}">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="theme-color" content="#0b6e4f">
+  <link rel="icon" href="{{ url_for('static', path='favicon.svg') }}" type="image/svg+xml">
+  <link rel="icon" href="{{ url_for('static', path='favicon-32.png') }}" type="image/png" sizes="32x32">
+  <link rel="apple-touch-icon" href="{{ url_for('static', path='apple-touch-icon.png') }}">
   <meta name="htmx-config" content='{"includeIndicatorStyles": false}'>
   <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}">
   <script src="{{ url_for('static', path='htmx-2.0.4.min.js') }}" defer></script>
@@ -19,7 +29,7 @@
     {% if info %}
     <div class="header-meta">
       <p class="week">Answering for <strong>Week {{ info.week }}, {{ info.season }}</strong>
-        {%- if info.gamedays %} · games {{ info.gamedays[0]|game_day }} – {{ info.gamedays[1]|game_day }}{% endif %}</p>
+        {%- if info.gamedays %} · games {{ info.gamedays[0]|game_day }} to {{ info.gamedays[1]|game_day }}{% endif %}</p>
       <p class="freshness">
         Rankings {{ info.rankings_as_of or "unknown" }}
         · News {{ info.news_as_of[:16]|replace("T", " ") if info.news_as_of else "never" }} UTC

@@ -107,6 +107,17 @@ def test_a_fetch_is_due_every_six_hours(db):
     assert reddit.due(db, now + timedelta(hours=6))
 
 
+def test_a_fresh_fetch_on_sunday_morning_before_the_benchmark(db):
+    sunday_7am_et = datetime(2026, 11, 1, 12, 0, tzinfo=UTC)  # EST from Nov 1
+    db.execute(
+        "INSERT INTO ingest_runs (source, season, max_week, row_count, finished_at) VALUES (?, ?, ?, ?, ?)",
+        (reddit.RUN_SOURCE, 2026, None, 1, "2026-11-01 11:00:00"),  # 6am ET
+    )
+    assert not reddit.due(db, sunday_7am_et)  # within 6 hours, before the Sunday window
+    assert reddit.due(db, sunday_7am_et + timedelta(hours=1, minutes=22))  # 8:22am ET: none since 8am yet
+    assert not reddit.due(db, datetime(2026, 11, 1, 15, 30, tzinfo=UTC))  # 10:30am: window over
+
+
 # --- extraction ------------------------------------------------------------------------
 
 

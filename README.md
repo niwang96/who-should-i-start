@@ -74,23 +74,23 @@ can only run this repo's Actions. GitHub's own schedule stays as a backup; dupli
 work that's already done.
 
 Tables (QB/RB/WR/TE, regular season only):
-- `players` — GSIS id, name, position, current roster team; includes rostered players who
+- `players`: GSIS id, name, position, current roster team; includes rostered players who
   haven't played yet (rookies, returns from injury)
-- `roster_weeks` — each player's team and roster status per week (active, reserve/IR,
+- `roster_weeks`: each player's team and roster status per week (active, reserve/IR,
   practice squad, cut, retired, ...); follows trades and releases
-- `player_weeks` — per game: snap %, targets, carries, target share, WOPR, actual and expected
+- `player_weeks`: per game: snap %, targets, carries, target share, WOPR, actual and expected
   fantasy points in standard / half-PPR / PPR
-- `injuries` — weekly official injury report status
-- `usage_features` — computed as of every week (`through_week`) so evaluation can use
+- `injuries`: weekly official injury report status
+- `usage_features`: computed as of every week (`through_week`) so evaluation can use
   point-in-time data: last-3-game snap %, snap % trend vs. the prior 3 games, target share,
   opportunities, actual vs. expected points per format, and `last_game_week` (staleness)
-- `games` — regular-season schedule (also used to detect byes)
-- `rankings` — FantasyPros weekly expert consensus (ECR) for every ranked QB/RB/WR/TE, one
+- `games`: regular-season schedule (also used to detect byes)
+- `rankings`: FantasyPros weekly expert consensus (ECR) for every ranked QB/RB/WR/TE, one
   archived copy per daily scrape: average/best/worst rank, spread, start/sit grade, and
   FantasyPros' projected PPR points. Read from the DynastyProcess copy of FantasyPros' rankings.
-- `projections` — FantasyPros per-format projections and projected receptions for ~240 top players,
+- `projections`: FantasyPros per-format projections and projected receptions for ~240 top players,
   one archived copy per daily fetch (needs `FANTASYPROS_API_KEY`)
-- `ingest_runs` — row counts per run
+- `ingest_runs`: row counts per run
 
 Expected points come from nflverse FF Opportunity, which is PPR-scored; half/standard are
 derived by subtracting 0.5 / 1.0 × expected receptions.
@@ -116,7 +116,7 @@ Tables: `news_items`, `news_extractions` (the per-URL LLM cache), `news_facts`, 
 ```bash
 python -m startsit.decide "Josh Jacobs" "Saquon Barkley" --scoring ppr
 ```
-prints the evidence packet and the AI's pick: confidence, 2–3 deciding factors with the evidence
+prints the evidence packet and the AI's pick: confidence, 2-3 deciding factors with the evidence
 ids they rely on, and, when it overrides the baseline, why. Code checks every cited id against the
 packet, retries once with the problems, and otherwise falls back to the baseline pick with a note
 (also when a limit below is hit or Gemini is down). Answers are cached by the exact packet text,

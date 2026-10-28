@@ -29,8 +29,9 @@
     <details class="explain">
       <summary>What do the confidence and "{{ source_labels[decision.source] }}" mean?</summary>
       {% if decision.source == "baseline" %}
-      <p><strong>Baseline pick:</strong> the AI wasn't used (the note above says why), so this is the
-        expert-consensus pick: the higher FantasyPros projection in your scoring format.</p>
+      <p><strong>Expert-consensus pick:</strong> the AI wasn't used (the note above says why), so this
+        is the player with the higher FantasyPros consensus projection in your scoring format, adjusted
+        for injuries and byes.</p>
       <p><strong>Confidence</strong> comes from the gap between the two projections:
         <strong>High</strong> {{ "%g"|format(high_margin) }}+ points,
         <strong>Medium</strong> {{ "%g"|format(medium_margin) }} to {{ "%g"|format(high_margin) }} points,
@@ -54,7 +55,7 @@
       {% endfor %}
     </ul>
     {% if decision.baseline_disagreement %}
-    <p class="disagreement"><strong>Differs from the baseline ({{ names[decision.baseline_pick] }}):</strong>
+    <p class="disagreement"><strong>Why not {{ names[decision.baseline_pick] }}, the expert-consensus pick:</strong>
       {{ decision.baseline_disagreement|link_citations(packet.item_ids) }}</p>
     {% endif %}
     {% set crowd = packet.crowd_pick %}

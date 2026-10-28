@@ -19,10 +19,12 @@ import urllib.error
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from datetime import time as clock_time
 
 from defusedxml.ElementTree import ParseError, fromstring
 
 from startsit.db import Database, RedditCommentRow, utc_iso
+from startsit.evidence import EASTERN
 from startsit.http import get_bytes
 from startsit.ingest.news import ATOM, clean_text, parse_date
 
@@ -37,6 +39,9 @@ MAX_RESET_WAIT = 120.0  # wait out a 429 only if Reddit says it resets within th
 COMMENT_MAX_CHARS = 500
 SKIP_AUTHORS = {"automoderator", "[deleted]"}
 FETCH_EVERY_HOURS = 6  # at most one Reddit fetch per this many hours (each takes ~5 minutes)
+# Plus one fresh fetch on Sunday morning (Eastern), before the 10am benchmark and the busiest
+# time for lineup questions, so the crowd votes aren't up to 6 hours old then.
+SUNDAY_REFRESH = (clock_time(8), clock_time(10))
 RUN_SOURCE = "reddit:comments"  # ingest_runs source of a fetch
 
 
@@ -130,12 +135,17 @@ def comments_url(thread: Thread) -> str:
 
 
 def due(db: Database, now: datetime) -> bool:
-    """Whether a fetch is due: none in the last FETCH_EVERY_HOURS hours."""
+    """Whether a fetch is due: none in the last FETCH_EVERY_HOURS hours, or none yet this Sunday
+    morning (SUNDAY_REFRESH, Eastern)."""
     last = db.last_run_at(RUN_SOURCE)
     if last is None:
         return True
-    elapsed = now - datetime.fromisoformat(last).replace(tzinfo=UTC)
-    return elapsed >= timedelta(hours=FETCH_EVERY_HOURS)
+    last_at = datetime.fromisoformat(last).replace(tzinfo=UTC)
+    if now - last_at >= timedelta(hours=FETCH_EVERY_HOURS):
+        return True
+    local = now.astimezone(EASTERN)
+    start, end = (datetime.combine(local.date(), t, EASTERN) for t in SUNDAY_REFRESH)
+    return local.weekday() == 6 and start <= local < end and last_at < start
 
 
 def fetch_comments(

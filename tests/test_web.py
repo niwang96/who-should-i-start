@@ -49,7 +49,7 @@ def test_home_page_shows_the_week_and_data_freshness(path):
         db.record_run("nflverse:player_weeks", 2026, 7, 1)
     r = client_for(path).get("/")
     assert r.status_code == 200
-    assert "Answering for <strong>Week 7, 2026</strong> · games Sun Oct 25 \N{EN DASH} Sun Oct 25" in r.text
+    assert "Answering for <strong>Week 7, 2026</strong> · games Sun Oct 25 to Sun Oct 25" in r.text
     assert "Rankings 2026-10-24" in r.text and "News never" in r.text and "Stats 20" in r.text
     assert "FantasyPros" in r.text  # attribution
     assert r.headers["content-security-policy"].startswith("default-src 'self'")
@@ -78,8 +78,8 @@ def test_ask_returns_the_ai_pick_with_cited_evidence_and_logs_it(path):
 def test_htmx_requests_get_only_the_result_fragment(path):
     r = ask(client_for(path), "Alpha Back", "Bravo Back", hx=True)
     assert "<html" not in r.text
-    assert "Start <strong>Alpha Back</strong>" in r.text and "Baseline pick" in r.text
-    assert "AI unavailable; showing the baseline pick." in r.text
+    assert "Start <strong>Alpha Back</strong>" in r.text and "Expert-consensus pick" in r.text
+    assert "The AI isn&#39;t available right now, so this is the expert-consensus pick." in r.text
     assert "High</strong> 5+ points" in r.text  # the baseline explainer gives the projection-gap rule
 
 
@@ -330,3 +330,16 @@ def test_no_crowd_note_when_the_crowd_agrees_or_has_no_lean(path):
         db.upsert("crowd_votes", [vote(f"c{i}", "A", "start", "2026-10-22T12:00:00+00:00") for i in range(3)])
     r = ask(client_for(path), "Alpha Back", "Bravo Back", hx=True)
     assert "crowd-note" not in r.text and "3 start / 0 sit" in r.text  # the evidence still shows the votes
+
+
+def test_the_tab_icon_is_linked_and_served(path):
+    client = client_for(path)
+    page = client.get("/").text
+    for name, kind in (
+        ("favicon.svg", "image/svg+xml"),
+        ("favicon-32.png", "image/png"),
+        ("apple-touch-icon.png", "image/png"),
+    ):
+        assert f"/static/{name}" in page
+        r = client.get(f"/static/{name}")
+        assert r.status_code == 200 and r.headers["content-type"].startswith(kind)

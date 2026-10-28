@@ -1,9 +1,10 @@
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from startsit.baseline import BaselineScore
-from startsit.decide import Decision, Factor, build_prompt, decide, validate
+from startsit.decide import Decision, Factor, build_prompt, decide, reset_time, validate
 from startsit.evidence import EvidenceItem, EvidencePacket, PlayerEvidence, Question
 from startsit.llm import BudgetedLLM, FakeProvider, LLMError, QuotaExceeded, RateLimited, VisitorLimit
 
@@ -172,10 +173,10 @@ def test_decide_falls_back_to_the_baseline_after_two_bad_answers(db):
     provider = FakeProvider(responses=[answer(pick="P1"), answer(pick="P1")])
     decision = decide(db, make_packet(), budgeted(db, provider))
     assert (decision.source, decision.pick, decision.confidence) == ("baseline", "NACUA", "high")
-    assert decision.note == "The AI's answer failed validation; showing the baseline pick."
+    assert decision.note == "The AI's answer didn't pass our fact checks, so this is the expert-consensus pick."
     assert decision.fallback == "invalid"
     assert decision.factors == [
-        Factor("Baseline (100% FantasyPros consensus) favors Puka Nacua by 6.4 pts.", ["E3", "E4"])
+        Factor("The expert consensus projects Puka Nacua 6.4 pts higher in half-PPR scoring.", ["E3", "E4"])
     ]
     assert len(provider.prompts) == 2
     assert db.query("select count(*) as n from decision_cache")[0]["n"] == 0  # failed answers aren't cached
@@ -184,23 +185,24 @@ def test_decide_falls_back_to_the_baseline_after_two_bad_answers(db):
 @pytest.mark.parametrize(
     "error,note,reason",
     [
-        (QuotaExceeded("daily limit"), "Daily AI limit reached; showing the baseline pick.", "daily_limit"),
+        (QuotaExceeded("daily limit"), "The AI has used up today's free answers, so this is the", "daily_limit"),
         (
             RateLimited("per minute"),
-            "The AI is busy right now; showing the baseline pick. Ask again in a minute.",
+            "The AI is busy right now, so this is the expert-consensus pick. Try again in a minute.",
             "busy",
         ),
-        (LLMError("boom"), "AI unavailable; showing the baseline pick.", "unavailable"),
+        (LLMError("boom"), "The AI isn't available right now, so this is the expert-consensus pick.", "unavailable"),
     ],
 )
 def test_decide_falls_back_when_the_llm_fails(db, error, note, reason):
     decision = decide(db, make_packet(), budgeted(db, FakeProvider(responses=[error])))
-    assert (decision.source, decision.note, decision.fallback) == ("baseline", note, reason)
+    assert (decision.source, decision.fallback) == ("baseline", reason) and decision.note.startswith(note)
 
 
 def test_decide_respects_the_daily_budget_and_works_without_an_llm(db):
     spent = decide(db, make_packet(), budgeted(db, FakeProvider(responses=[answer()]), budget=0))
-    assert spent.note == "Daily AI limit reached; showing the baseline pick."
+    assert spent.note.startswith("The AI has used up today's free answers, so this is the expert-consensus pick.")
+    assert spent.note.endswith(f"They reset at {reset_time()}.")
     none = decide(db, make_packet(margin=1.0), None)
     assert (none.source, none.confidence, none.fallback) == ("baseline", "low", "unavailable")
 
@@ -216,7 +218,7 @@ def test_decide_stops_a_visitor_at_their_limit_but_still_serves_cached_answers(d
     other = decide(db, make_packet(margin=6.5), visitor_llm(FakeProvider(responses=[answer()])))
     assert (other.source, other.note) == (
         "baseline",
-        "You've reached the limit of 1 new AI answers per 10 minutes; showing the baseline pick.",
+        "You've reached the limit of 1 new AI answers per 10 minutes, so this is the expert-consensus pick.",
     )
 
 
@@ -237,7 +239,9 @@ def test_confidence_is_capped_for_a_questionable_pick(db):
     packet2 = make_packet(margin=7.5)
     packet2.players[1].game_status = "doubtful"
     capped = decide(db, packet2, None)
-    assert capped.confidence == "medium" and capped.note.startswith("AI unavailable") and "doubtful" in capped.note
+    assert (
+        capped.confidence == "medium" and capped.note.startswith("The AI isn't available") and "doubtful" in capped.note
+    )
 
 
 def test_low_or_medium_confidence_is_left_alone(db):
@@ -245,3 +249,27 @@ def test_low_or_medium_confidence_is_left_alone(db):
     packet.players[1].game_status = "questionable"
     decision = decide(db, packet, budgeted(db, FakeProvider(responses=[answer(confidence="low")])))
     assert (decision.confidence, decision.note) == ("low", None)
+
+
+@pytest.mark.parametrize(
+    "now,expected",
+    [(datetime(2026, 10, 28, 15, tzinfo=UTC), "8 PM ET"), (datetime(2026, 11, 2, 15, tzinfo=UTC), "7 PM ET")],
+)
+def test_the_daily_reset_is_midnight_utc_in_eastern_time(now, expected):
+    assert reset_time(now) == expected  # EDT, then EST from Nov 1
+
+
+def test_dashes_are_taken_out_of_the_ai_text(db):
+    raw = answer() | {
+        "summary": "Alpha projects higher [E1] \N{EM DASH} and that matters.",
+        "factors": [
+            {"text": "Higher projection \N{EN DASH} by a bit.", "evidence_ids": ["E1"]},
+            {"text": "Better matchup.", "evidence_ids": ["E2"]},
+        ],
+    }
+    decision, problems = validate(raw, make_packet())
+    assert problems == [] and decision is not None
+    assert decision.summary == "Alpha projects higher [E1], and that matters."
+    assert decision.factors[0].text == "Higher projection, by a bit."
+    stored = json.loads(decision.to_json()) | {"summary": "Old \N{EM DASH} answer"}
+    assert Decision.from_json(json.dumps(stored)).summary == "Old, answer"

@@ -1,7 +1,10 @@
 {% extends "_layout.html" %}
 
 {% block main %}
-    <form action="/ask" method="post" hx-post="/ask" hx-target="#result" hx-indicator="#asking">
+    <p class="intro">Stuck between two players? Enter both and your scoring. An AI weighs the expert
+      consensus, recent usage, matchups, injury news and Reddit's take, then makes the call and shows
+      its sources.</p>
+    <form action="/ask" method="post" hx-post="/ask" hx-target="#result" hx-swap="innerHTML show:#result:top" hx-indicator="#asking">
       <div class="matchup">
         {% for i in range(max_players) %}
         {% set value = players[i] if i < players|length else "" %}
@@ -39,10 +42,13 @@
   <details class="about">
     <summary>How it works</summary>
     <p>Code gathers the evidence for each player: the FantasyPros expert consensus, recent usage
-    (snaps, targets, expected points), betting lines, the injury report and this week's news. It
-    computes a baseline pick from the consensus projection. An AI then makes the call, citing the
-    numbered evidence it used, and must explain itself if it disagrees with the baseline. It may
-    only use the listed facts. If the AI is busy or unavailable, you get the baseline pick. Every pick is
-    scored after the games: see the <a href="/record">track record</a>.</p>
+    (snaps, targets, expected points), betting lines, the injury report, this week's news and votes
+    from Reddit's "Who Do I Start" threads. Its starting point is the expert-consensus pick: the
+    higher projection in your scoring format. The AI then makes the call from that evidence alone,
+    citing each fact it used, and has to explain itself when it goes against the experts. Code
+    checks every name, number and citation before you see it. If the AI is busy or out of free
+    answers for the day, you get the expert-consensus pick.</p>
+    <p>Every pick is scored against what actually happened, next to the experts and the Reddit
+    crowd: see the <a href="/record">track record</a>.</p>
   </details>
 {% endblock %}
