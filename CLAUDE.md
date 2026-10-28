@@ -18,51 +18,51 @@ Purpose: portfolio/resume project. It should have real users beyond the author (
 
 ## Data sources
 
-### FantasyPros API — expert consensus (+ news)
+### FantasyPros API: expert consensus (+ news)
 - Free public API for **personal, non-commercial use**; request a key at secure.fantasypros.com/api-keys/request with a description of intended use.
 - Terms: must not build a product that directly competes with FantasyPros; must cite FantasyPros as the source; player images (Sportradar-licensed) can't be used.
 - Free keys return at most 10 rows per call (tested Oct 24 2026; details under Open to-dos).
 - In the access request, describe it as a free, non-commercial portfolio project that uses their consensus as one input alongside news/usage analysis.
 
-### nflverse — usage and stats
+### nflverse: usage and stats
 - Free, open NFL data published as GitHub release assets (CSV/Parquet); Python loader: `nflreadpy`.
-- Datasets of interest: weekly player stats, snap counts, depth charts, injuries, schedules, **FF Opportunity** (expected fantasy points from usage — a model-based signal independent of experts), **FF Rankings** (possible fallback for consensus; check contents/update cadence first).
-- Maintained by community volunteers — no SLA. Batch data that updates after games, **not** a source for breaking news.
+- Datasets of interest: weekly player stats, snap counts, depth charts, injuries, schedules, **FF Opportunity** (expected fantasy points from usage: a model-based signal independent of experts), **FF Rankings** (possible fallback for consensus; check contents/update cadence first).
+- Maintained by community volunteers: no SLA. Batch data that updates after games, **not** a source for breaking news.
 
-### RSS feeds — latest news
+### RSS feeds: latest news
 Candidate feeds (**verify each URL still resolves before building on it**):
-- RotoWire latest NFL news — player-level fantasy blurbs; most useful
-- ProFootballTalk — fast breaking news
-- ESPN NFL, CBS Sports NFL — broader coverage/confirmation
-- FantasyPros NFL — optional, may overlap with API
+- RotoWire latest NFL news: player-level fantasy blurbs; most useful
+- ProFootballTalk: fast breaking news
+- ESPN NFL, CBS Sports NFL: broader coverage/confirmation
+- FantasyPros NFL: optional, may overlap with API
 Store headline + summary + link only; link out to the source rather than fetching full articles.
 
-### Reddit — crowd chatter (optional, must degrade gracefully)
+### Reddit: crowd chatter (optional, must degrade gracefully)
 - Unauthenticated `.json` endpoints (`/r/{sub}/new.json`, `/r/{sub}/top.json?t=week`, `/r/{sub}/comments/{id}.json`). Author has confirmed these work locally as of Oct 2026. **From GitHub Actions they're blocked (403); RSS works there** (tested Oct 27 2026, see Open to-dos), so step 6 uses RSS.
 - Official Data API access is approval-gated and closing to new requests, so do not depend on it.
-- Reference implementation pattern: https://github.com/niwang96/award-travel-updates (`RedditAccessor`, `RChurningSummaryAgent`) — find a recurring thread by title, pull top comments, filter out bots, return an empty list on any failure.
+- Reference implementation pattern: https://github.com/niwang96/award-travel-updates (`RedditAccessor`, `RChurningSummaryAgent`): find a recurring thread by title, pull top comments, filter out bots, return an empty list on any failure.
 - For fantasy: find r/fantasyfootball's weekly start/sit and injury threads, pull top comments, filter for the queried player names.
-- **Test from the deployed environment early** — datacenter IPs (GitHub Actions, Vercel, etc.) may be treated differently from a laptop.
+- **Test from the deployed environment early**: datacenter IPs (GitHub Actions, Vercel, etc.) may be treated differently from a laptop.
 - Be polite: descriptive User-Agent, caching, spaced-out comment fetches.
 
 ## Architecture
 
-### Stage 1 — Ingest (scheduled job)
+### Stage 1: Ingest (scheduled job)
 - Numbers go straight to the DB: FantasyPros rankings, nflverse usage. Code computes features (e.g., 3-week snap share trend, consensus rank by scoring format, expected vs. actual points).
 - Text gets structured **once, at ingest time** by a cheap LLM call, then cached:
   - news → `{player, event, severity, date, source_url}`
   - Reddit comment → `{player, sentiment, claim, source_url}` (RSS has no upvotes)
 
-### Stage 2 — Evidence packet (code, no LLM)
+### Stage 2: Evidence packet (code, no LLM)
 On a query, code assembles a compact per-player summary: consensus rank, usage trend, expected vs. actual points, latest structured news items, Reddit sentiment counts. Target a few hundred tokens, not raw articles.
 
-### Stage 3 — Decide and explain (one LLM call)
+### Stage 3: Decide and explain (one LLM call)
 - Code first computes a **simple baseline score** (e.g., consensus rank adjusted by usage trend).
-- The LLM receives the evidence packet + baseline and returns structured output: pick, confidence, 2–3 deciding factors, and the IDs of evidence items used (for source links).
+- The LLM receives the evidence packet + baseline and returns structured output: pick, confidence, 2-3 deciding factors, and the IDs of evidence items used (for source links).
 - If the LLM disagrees with the baseline, it must state why (e.g., "baseline favors B, but B was DNP Thursday").
 - Never let the LLM state facts that aren't in the evidence packet.
 
-### Stage 4 — Evaluate (after each week's games)
+### Stage 4: Evaluate (after each week's games)
 Log every recommendation; score against actual fantasy points. Report hit rates for: LLM pick vs. code baseline vs. raw FantasyPros consensus. This shows whether the LLM layer adds value.
 
 ## Caching (protects free-tier limits)
@@ -76,7 +76,7 @@ Many users will ask about the same players, so cache per-player results.
 - **Ingest:** Python jobs (`nflreadpy`) run by GitHub Actions cron, writing to Supabase. The repo is **public** (since Oct 25 2026), so Actions minutes are free; GitHub disables scheduled workflows in a public repo after 60 days without repo activity, so re-enable `ingest.yml` if that happens in the off-season.
 - **Web app:** FastAPI on Vercel's free Python functions; simple HTMX/Jinja frontend (no JS framework for MVP).
 - **DB:** New columns are added to existing tables automatically on connect (`Database._add_missing_columns`; they must be nullable). Supabase (Postgres) via `DATABASE_URL` (session pooler URI; the direct connection is IPv6-only, which Actions/Vercel can't reach; the Claude Code cloud env can't reach Postgres at all). Local SQLite when unset. All SQL lives in `startsit/db.py` and is written once for both backends; tests run on both.
-- **Code quality:** ruff (lint + format) and mypy run in CI alongside pytest; CI fails below **95% branch coverage** (`pyproject.toml`). Live integration tests (`tests/test_live.py`, marker `live`, deselected by default) hit the real services with a minimal quota (2–4 Gemini calls, 1 FantasyPros call) via `integration.yml`: only on merges to `main` touching source adapters, and by hand (Actions → integration → Run workflow, any branch). No schedule: the ingest jobs already call every service.
+- **Code quality:** ruff (lint + format) and mypy run in CI alongside pytest; CI fails below **95% branch coverage** (`pyproject.toml`). Live integration tests (`tests/test_live.py`, marker `live`, deselected by default) hit the real services with a minimal quota (2-4 Gemini calls, 1 FantasyPros call) via `integration.yml`: only on merges to `main` touching source adapters, and by hand (Actions → integration → Run workflow, any branch). No schedule: the ingest jobs already call every service.
 - **Web security** (review Oct 27 2026):
   - All SQL values are parameterized; f-strings only splice in table/column names from code.
   - Templates autoescape. Source links are rendered only if http(s) (`web.app.safe_href`), behind a strict CSP.
@@ -90,14 +90,14 @@ Many users will ask about the same players, so cache per-player results.
 
 ## Secrets
 - Read keys only from environment variables: `GEMINI_API_KEY`, `FANTASYPROS_API_KEY`. Never commit them, print them, or log them; keep `.env` gitignored and provide `.env.example`.
-- Claude Code cloud env: keys are plain env vars (the network-secret types — Bearer/Body param/Basic/SigV4/GCP token — don't fit Gemini's `x-goog-api-key` header). The Gemini key there is a dev-only key with billing off.
+- Claude Code cloud env: keys are plain env vars, since the network-secret types (Bearer, Body param, Basic, SigV4, GCP token) don't fit Gemini's `x-goog-api-key` header. The Gemini key there is a dev-only key with billing off.
 - GitHub Actions: repository secrets. Vercel: project environment variables.
 
 ## Build order
 1. Skeleton + nflverse ingest + usage features + Actions cron
 2. ~~Baseline score + evidence packet~~ (done Oct 24 2026): FF Rankings as the consensus; baseline is 100% consensus for now (decided: add usage weighting only if the evaluation shows it helps; FantasyPros API add-on deferred)
 3. ~~RSS news + cached LLM extraction~~ (built Oct 24 2026): `startsit/llm.py` (Gemini REST provider, fake provider, `BudgetedLLM` with per-purpose daily budgets logged in `llm_calls`), `startsit/ingest/news.py` (RSS/Atom via defusedxml), `startsit/ingest/news_extract.py` (batches of 40, name matching, cache in `news_extractions` keyed by item id = feed guid, else link), and `news` items in the evidence packet (last 7 days, up to 3 per player, cut off at the question's `as_of`). News budget 40 calls/day; runs hourly in `ingest.yml`.
-4. ~~Stage 3 decide call~~ (built Oct 24 2026): `startsit/decide.py`. One Gemini call per question (players labeled P1/P2...), JSON schema with pick, confidence, 2–3 factors citing evidence ids and a required `baseline_disagreement` when the pick differs. Code validates the pick, every cited id and the disagreement, retries once with the problems, then falls back to the baseline with a note (also on quota/LLM errors). Validated answers are cached in `decision_cache` by a hash of model + `PROMPT_VERSION` + packet text. Decide budget: 400 calls/day. Betting lines (spread, total → implied team points) from the nflverse schedule were added as `matchup` evidence.
+4. ~~Stage 3 decide call~~ (built Oct 24 2026): `startsit/decide.py`. One Gemini call per question (players labeled P1/P2...), JSON schema with pick, confidence, 2-3 factors citing evidence ids and a required `baseline_disagreement` when the pick differs. Code validates the pick, every cited id and the disagreement, retries once with the problems, then falls back to the baseline with a note (also on quota/LLM errors). Validated answers are cached in `decision_cache` by a hash of model + `PROMPT_VERSION` + packet text. Decide budget: 400 calls/day. Betting lines (spread, total → implied team points) from the nflverse schedule were added as `matchup` evidence.
 4b. ~~Hardening before the web app~~ (built Oct 25 2026):
    - FantasyPros projections daily (`startsit/ingest/projections.py`): the top QB/RB/WR/TE by consensus rank (36/72/96/36 → ~26 calls, 2 s apart; ~240 players). The baseline converts PPR to half/standard with FantasyPros' projected receptions, falling back to usage-based expected catches.
    - News facts carry a `game_status` (out/doubtful/questionable/active). This week's newest status (after the team's previous game) zeroes a player ruled out, and "active" overrides a stale non-active roster status.
@@ -109,18 +109,18 @@ Many users will ask about the same players, so cache per-player results.
    - A news game status only counts once the team's previous game is over (kickoff + 4 h), so an in-game "won't return" from Monday night doesn't zero next week.
    - News extraction drops role speculation ("may soon start") via the prompt plus a code filter on may/might/could for role facts without a game status.
    - FantasyPros projections are fetched in rank order across positions, so a quota cut-off loses the lowest-ranked players everywhere instead of a whole position (the first post-4b run got 179 of ~240 before a 429).
-   - Decisions require 2–3 factors (matching the prompt); shared HTTP GET with one User-Agent (`startsit/http.py`).
+   - Decisions require 2-3 factors (matching the prompt); shared HTTP GET with one User-Agent (`startsit/http.py`).
 4d. ~~Free-tier protections~~ (Oct 25 2026), so step 5 is only the web app. `BudgetedLLM` checks, before every Gemini call, by counting `llm_calls` (now with `called_at` written by code and a nullable `visitor` column): the purpose's daily budget (decide 400, news 40; news raised to 60 in 5b), a **shared 12 calls/minute** cap across ingest and web (Gemini allows 15), and per-visitor limits for decisions (`decide.VISITOR_LIMITS`: 6 new AI answers per 10 min, 25/day; cached answers are free). Visitors are a salted hash of the IP (`llm.visitor_id`, `VISITOR_SALT`). Each limit raises its own error (`QuotaExceeded` daily, `RateLimited` per minute, `VisitorLimited`) and the baseline fallback says which; a Gemini 429 naming a per-day quota maps to daily, anything else to per-minute. The web app builds one `decide.decide_llm(db, visitor)` per request. Same PR: 95% coverage gate, live integration tests, `startsit.evidence` CLI removed (`decide --no-llm` prints the packet), RLS on every Postgres table. Count-then-call can overshoot slightly under concurrency, hence the headroom.
 5. ~~Web UI + recommendation logging~~ (built Oct 25 2026): `startsit/web/` (FastAPI + Jinja + htmx 2.0.4 vendored in `static/`, strict same-origin CSP, works without JS), `api/index.py` + `vercel.json` for Vercel (no rewrites: Vercel's FastAPI support routes every path to the app; the first deploy's rewrite to `/api/index` made every page a 404). Shows the week answered for and data freshness, player suggestions (the full list in a `<datalist>`, filtered by the browser: no requests while typing, and `static/app.js` stops Enter from submitting, so only the button asks), pick/confidence/factors with evidence links, all evidence with source links, and a "game already kicked off" warning. Each request builds `decide_llm(db, visitor_id(ip))`; every answer goes to `recommendations` with the packet text and JSON (`decide.record_recommendation`). Deployment: base install only (polars/nflreadpy moved to the `ingest` extra; web install ~57 MB), connections use `prepare_threshold=None` for the transaction pooler, and the web app creates tables only on its first connection per process. Supabase is in AWS us-west-2, so the Vercel function region is `pdx1` (set in `vercel.json`).
-5b. ~~Reliable ingest schedule~~ (Oct 25 2026). GitHub delayed or dropped most scheduled runs on Sunday Oct 25 (7 runs in 20 h instead of ~40; the 10:17 daily run never ran). Fixes: every scheduled run is a `news` run, which also does the daily stats refresh when it's due (`ingest.__main__.stats_due`: none since the latest 10:00 UTC), so the first run to get through after 10:00 UTC does it. The 15-minute fetch-only game-day polling (mostly after kickoff, extraction delayed to the next hourly run, and mostly dropped) was replaced by full news runs when news matters for lineups: Sunday every 30 min ~8am–1:30pm ET plus twice before the 4pm games, and twice before Thursday/Monday night games (UTC crons cover both EDT and EST; minutes avoid :00). News budget raised to 60 calls/day (400 + 60 of Gemini's 500). If runs still go missing, the fallback is an external trigger (cron-job.org calling `workflow_dispatch` with a repo-scoped token).
+5b. ~~Reliable ingest schedule~~ (Oct 25 2026). GitHub delayed or dropped most scheduled runs on Sunday Oct 25 (7 runs in 20 h instead of ~40; the 10:17 daily run never ran). Fixes: every scheduled run is a `news` run, which also does the daily stats refresh when it's due (`ingest.__main__.stats_due`: none since the latest 10:00 UTC), so the first run to get through after 10:00 UTC does it. The 15-minute fetch-only game-day polling (mostly after kickoff, extraction delayed to the next hourly run, and mostly dropped) was replaced by full news runs when news matters for lineups: Sunday every 30 min ~8am-1:30pm ET plus twice before the 4pm games, and twice before Thursday/Monday night games (UTC crons cover both EDT and EST; minutes avoid :00). News budget raised to 60 calls/day (400 + 60 of Gemini's 500). If runs still go missing, the fallback is an external trigger (cron-job.org calling `workflow_dispatch` with a repo-scoped token).
    - **Update (Oct 28 2026): the external trigger is in place.** GitHub kept dropping scheduled runs: on Oct 27, only 1 of ~9 ran between 03:00 and 10:50 UTC, and the 10:17 daily refresh was skipped.
    - **cron-job.org** (the author's account) POSTs to `https://api.github.com/repos/niwang96/who-should-i-start/actions/workflows/ingest.yml/dispatches` with body `{"ref":"main","inputs":{"only":"news"}}`.
    - **Headers:** `Authorization: Bearer <token>`, `Accept: application/vnd.github+json`, `X-GitHub-Api-Version: 2022-11-28`, `Content-Type: application/json`, `User-Agent`.
    - **Token:** a fine-grained token limited to this repo, with **Actions: Read and write** only. The first test got a 403 until that permission was set. It expires after the season; renew it then.
-   - **Jobs (America/New_York):** hourly at :52, and Sundays 8–13h at :22 and :52.
+   - **Jobs (America/New_York):** hourly at :52, and Sundays 8-13h at :22 and :52.
    - **GitHub's own schedule stays as a backup.** Duplicate runs are harmless: the `ingest` concurrency group queues them, and work that's done (news extraction, the daily refresh, a benchmark set) isn't repeated.
    - First trigger: Oct 28 00:28 UTC, response 204.
-5c. ~~Clearer answers~~ (Oct 27 2026): the decision adds a 3–5 sentence `summary` citing ids like [E2] (`PROMPT_VERSION` 3), shown above the factor bullets with the ids linked. Validation now also rejects any number in the summary, factors or disagreement that isn't in the packet (rounded values, differences between two packet numbers and counts up to 10 are allowed) and swapped player names ("Tyler Kelce"); an uncited summary was rejected too until 5d. Live check (Oct 26, 9 matchups): every answer validated, one after a retry for a missing citation. The page explains the confidence and "AI pick"/"Baseline pick" tags (`<details>`), and compares exactly 2 players (the engine still takes more). The header shows the week's game days (e.g. "games Thu Oct 22 – Mon Oct 26"; NFL weeks run Thursday–Monday, the fantasy week Tuesday–Monday). If either player's game has already kicked off, the answer is "No pick needed" (locked in most leagues): no AI call and no `recommendations` row, with the evidence still shown. The web app takes an injectable `clock`, so tests don't depend on today's date. Known: the model expands team abbreviations ("Baltimore" from BAL), and an activated player shown as both "exempt list" (stale roster) and "activated" (news) can confuse it.
+5c. ~~Clearer answers~~ (Oct 27 2026): the decision adds a 3-5 sentence `summary` citing ids like [E2] (`PROMPT_VERSION` 3), shown above the factor bullets with the ids linked. Validation now also rejects any number in the summary, factors or disagreement that isn't in the packet (rounded values, differences between two packet numbers and counts up to 10 are allowed) and swapped player names ("Tyler Kelce"); an uncited summary was rejected too until 5d. Live check (Oct 26, 9 matchups): every answer validated, one after a retry for a missing citation. The page explains the confidence and "AI pick"/"Baseline pick" tags (`<details>`), and compares exactly 2 players (the engine still takes more). The header shows the week's game days (e.g. "games Thu Oct 22 - Mon Oct 26"; NFL weeks run Thursday-Monday, the fantasy week Tuesday-Monday). If either player's game has already kicked off, the answer is "No pick needed" (locked in most leagues): no AI call and no `recommendations` row, with the evidence still shown. The web app takes an injectable `clock`, so tests don't depend on today's date. Known: the model expands team abbreviations ("Baltimore" from BAL), and an activated player shown as both "exempt list" (stale roster) and "activated" (news) can confuse it.
 5d. ~~Wider layout~~ (Oct 27 2026): up to ~1150 px wide; header on one row (title left, week/dates/freshness right); the two player inputs side by side with scoring + button on one row; the answer card in two columns (verdict, tags and explainer left; summary and reasons right, capped at a readable width); evidence as a comparison grid (one row per kind, one column per player, picked player shaded; `PlayerEvidence.items_of`); "How it works" collapsed; small citation chips. Phones stack everything, with each evidence row labeled by player. Validation got more forgiving after a live near-tie failed twice on format: citations that aren't ids (e.g. the packet's header line) are dropped, and a summary without citations is accepted (the number check still applies); `PROMPT_VERSION` 4. Re-check: 8/8 real matchups answered by the AI on the first call. Follow-up: scoring is a segmented toggle (still radio buttons), the button sits at the right edge (full width on phones), and the same-name hint is gone (the ambiguity error gives the example).
 5e. Limit and Reddit checks (Oct 27 2026): `/diag/limits` (`startsit/web/diag.py`) shows the masked IP, which headers carried it, the visitor hash, and usage of each AI limit (no AI call). It's registered only when `VERCEL_ENV=preview`, and preview deployments sit behind Vercel's login, so production never serves it. Reddit gets read by the ingest jobs, not the web app, so it's tested from GitHub Actions: `test_live.py::test_reddit_is_readable_from_this_runner` (no API quota; Actions → integration → Run workflow).
 6. **Weekly evaluation, then Reddit as a crowd signal** (planned Oct 27 2026; 6a first, since it measures everything else).
@@ -132,7 +132,7 @@ Many users will ask about the same players, so cache per-player results.
        - The report (`python -m startsit.evaluate`) compares AI, baseline and consensus on the AI-answered matchups, and adds AI overrides, confidence buckets and baseline/consensus over all matchups.
        - The daily stats refresh scores new results.
        - `startsit/benchmark.py`: 30 pairs a week (QB 4, RB 9, WR 12, TE 5; raised from 20 on Oct 27) of ECR neighbors starting at QB10/RB15/WR20/TE6. Who's listed first alternates, and the scoring formats cycle.
-       - **Live set:** asked by news runs in the window 3 h before the first Sunday kickoff at noon ET or later (10am–1pm ET for the usual 1pm slate; morning international games don't count), skipping players whose game has started, 15 s between AI calls (≤4 of the shared 12/minute, ~8 minutes a set). Moved from 9am and 10 s on Oct 27 to catch more Sunday-morning news and leave room for users. A window missed entirely is left to the backfill.
+       - **Live set:** asked by news runs in the window 3 h before the first Sunday kickoff at noon ET or later (10am-1pm ET for the usual 1pm slate; morning international games don't count), skipping players whose game has started, 15 s between AI calls (≤4 of the shared 12/minute, ~8 minutes a set). Moved from 9am and 10 s on Oct 27 to catch more Sunday-morning news and leave room for users. A window missed entirely is left to the backfill.
        - **Budgets:** `benchmark` 45/day (30 + retries); decide lowered to 390, so 390 + 60 + 45 = 495 of Gemini's 500.
        - **Interruptions** (code review, Oct 27):
          - A set is complete only when every matchup was asked; completion is recorded in `ingest_runs` as `benchmark:<tag>` (`benchmark.done`).
@@ -146,7 +146,7 @@ Many users will ask about the same players, so cache per-player results.
          - Asks as of that week's live time. It reads the rankings scrape from just before then from the file's git history (`rankings.snapshot_before` via the GitHub API with the workflow token, then `fetch_snapshot`) and archives it.
          - Week 1 can't be backfilled: its scrapes lack kickoff times, so the file's week can't be inferred (`BACKFILL_FROM_WEEK` = 2).
        - **Backfill caveats** (why it's reported apart from the live benchmark):
-         - News only exists from Oct 24, so weeks 2–6 packets have no news, and the AI can't use the late news that's its main edge.
+         - News only exists from Oct 24, so weeks 2-6 packets have no news, and the AI can't use the late news that's its main edge.
          - There are no FantasyPros projections before Oct 25 (usage-based catches convert the formats).
          - nflverse's weekly roster status for a past week may reflect later changes.
          - If the model's training data covered these games, its answers could be contaminated; unlikely for a model released before the season, but not provable.
@@ -161,14 +161,14 @@ Many users will ask about the same players, so cache per-player results.
          - Every matchup links to `/record/<rec_id>`, which shows what happened, then the stored answer and its full evidence. It reuses `_result.html`, so it looks exactly as shown when asked.
          - Rebuilt from `recommendations.packet_json`/`decision_json` (`EvidencePacket.from_json`, `Decision.from_json`): no AI call, nothing recomputed.
          - Ids must be 32-hex (`REC_ID`); anything else 404s.
-       - **Dry run on real data** (baseline only, no AI, Oct 27): 180 matchups over weeks 2–7, each mapped to the right week's Sunday ~3am ET scrape. Of 176 scored, the baseline hit 89/175 (51%) and the raw consensus 83/172 (48%): close calls are coin flips for the experts, the bar the AI has to clear. (The earlier 20-pair week 7 dry run: 6/17 each.)
+       - **Dry run on real data** (baseline only, no AI, Oct 27): 180 matchups over weeks 2-7, each mapped to the right week's Sunday ~3am ET scrape. Of 176 scored, the baseline hit 89/175 (51%) and the raw consensus 83/172 (48%): close calls are coin flips for the experts, the bar the AI has to clear. (The earlier 20-pair week 7 dry run: 6/17 each.)
      - **Actual points:** each player's PPR/half/standard points from the nflverse weekly stats the daily job already loads. A player who didn't play scores 0.
      - **Picks scored per matchup:** a pick hits when the chosen player outscores the other in the asked scoring. Four picks are scored side by side:
        - AI pick (what the user saw);
        - baseline pick (projection);
        - consensus pick (better FantasyPros rank; today nearly always equal to the baseline, tracked so they can diverge);
        - crowd pick (from 6b).
-     - **Weekly benchmark set:** real questions are too few for meaningful hit rates, so each week code runs ~20–30 close matchups through the AI (same position, small projection gap: the real dilemmas). That's ~30 Gemini calls/week within the decide budget. They're kept apart from user questions in every report (e.g. `recommendations.visitor = 'benchmark'` or a source column).
+     - **Weekly benchmark set:** real questions are too few for meaningful hit rates, so each week code runs ~20-30 close matchups through the AI (same position, small projection gap: the real dilemmas). That's ~30 Gemini calls/week within the decide budget. They're kept apart from user questions in every report (e.g. `recommendations.visitor = 'benchmark'` or a source column).
      - **Schedule:** after Monday night's stats land (normally Tuesday), the daily run scores the finished week into a results table.
      - **Public "Track record" page:** hit rates per week and for the season, by pick type. It also shows the matchups where the AI overrode the baseline and who was right, and calibration (does High hit more often than Low?). Decided to make it public: it's the portfolio story, bad weeks included.
    - **6b. Reddit** (access findings under Open to-dos: JSON is blocked from Actions, RSS works but is rate-limited):
@@ -183,14 +183,21 @@ Many users will ask about the same players, so cache per-player results.
        - The prompt keeps only stated recommendations (a bare player name in a reply counts as start). Questions, the asker's own lean, jokes, kickers and defenses yield nothing.
        - Votes `{player, start|sit, reason}` go to `crowd_votes`, matched by exact full name (team breaks ties), else by a one-word first or last name ("Egbuka", "Puka") that only one QB/RB/WR/TE in the current week's rankings has (`PlayerMatcher.match_one_word`; added Oct 28 after the first production run dropped ~40 surname-only votes). Unmatched or ambiguous names are dropped. Every processed comment is cached in `reddit_extractions`.
        - **First production run (Oct 28 02:52 UTC):** 206 comments → 52 votes in 5 calls (before one-word matching).
-       - Budget `reddit` 20/day; decide lowered to 370, so 370 + 60 + 45 + 20 = 495 of Gemini's 500.
+       - Budget `reddit` 25/day (20 until Oct 28, when news went 60 → 55). All daily budgets now live in one table, `llm.DAILY_BUDGETS` (decide 370, news 55, benchmark 45, reddit 25 = 495 of Gemini's 500; a test keeps the sum under 495 and the benchmark budget above a whole set).
+       - Fetches also run once on Sunday morning (`reddit.SUNDAY_REFRESH`, 8 to 10am ET, if none since 8am), so the 10am benchmark and Sunday's users see fresh votes.
        - Live test: `test_reddit_wdis_comments_become_crowd_votes` (one Gemini call) runs the real fetcher, parser and extraction on today's WDIS thread and prints the votes.
        - **First live run (Oct 28, WR thread of Tue 10/27):** 48 comments → 23 votes in 1 call. Nicknames resolved ("KC" → KC Concepcion, "P Wash" → Parker Washington, "Germie" → Germie Bernard, "AJB" → A.J. Brown), and questions yielded nothing. Known weakness: a ranking ("Moore, AJB, KC") counts every listed player as a start, though the last is effectively a sit. That's mild over-counting, acceptable since the crowd pick compares two players' counts, and the evaluation will show whether it matters.
      - **Crowd signal (built Oct 28 2026):**
        - **Evidence:** one `crowd` item per player with votes: "Reddit r/fantasyfootball Who Do I Start threads this week: 4 start / 1 sit (fans' opinions, one vote per comment); reasons given: …" (up to 2 distinct reasons, newest first), linking the newest comment. "This week" = published after the team's previous game ended (same cutoff as news game statuses) and before `as_of`, so past packets (backfill) have no crowd. No item when there are no votes.
-       - **Prompt (`PROMPT_VERSION` 5):** crowd items are opinion, not definite facts; in a close call (baseline margin under 2 pts) a clear crowd lean may decide it; a fan's stated reason is only that fan's claim. Live check: with a 3-point baseline gap and a 6–0 crowd lean the other way, the AI kept the experts' pick and mentioned the crowd.
+       - **Prompt (`PROMPT_VERSION` 5):** crowd items are opinion, not definite facts; in a close call (baseline margin under 2 pts) a clear crowd lean may decide it; a fan's stated reason is only that fan's claim. Live check: with a 3-point baseline gap and a 6-0 crowd lean the other way, the AI kept the experts' pick and mentioned the crowd.
        - **Crowd pick** (`EvidencePacket.crowd_pick`): the player whose net votes (start − sit) lead every other player's by `CROWD_MIN_LEAD` = 2, else none. Stored as `recommendations.crowd_pick`, scored as `evaluations.crowd_hit` (None without a pick), and reported as the crowd rate (on AI-answered matchups and on all), so it's scored on fewer matchups than the others. Comments for "new information" items (practice reports, role changes) were left out: news already covers those from primary sources.
        - **UI:** when the crowd pick differs from the baseline, the answer says "The Reddit crowd disagrees with the experts", with both players' counts and which side the AI took. `/record` adds a Reddit crowd tile and column once any crowd pick is scored.
+7. **Launch polish** (Oct 28 2026, before sharing the site):
+   - Tab titles: "Who Should I Start?" and "Who Should I Start? - Track Record". Link previews (Open Graph tags, `static/og.png` 1200x630), an SVG favicon and a one-line intro on the home page. On phones the page scrolls to the answer.
+   - Users see "expert-consensus pick" instead of "baseline" on the answer page (tag, fallback notes, the fallback's reason, "Why not X, the expert-consensus pick"). The track record keeps "Baseline" as its own column, explained on the page.
+   - Fallback notes say why in plain words; the daily-limit note gives the reset time (midnight UTC, shown in Eastern).
+   - No em dashes anywhere: templates and docs use plain punctuation, the prompt (`PROMPT_VERSION` 6) asks for short direct sentences without dashes or filler, and `decide.plain` replaces any dash the model writes (also in stored answers when shown).
+   - Known gap (live check, Oct 28): validation catches made-up numbers and swapped names but not a comparison stated backwards (the model said a 4.5-point underdog had the higher implied points). Worth a check if it shows up in real answers.
 
 ## Open to-dos
 - [x] Request FantasyPros API key (approved; key received)
@@ -201,8 +208,8 @@ Many users will ask about the same players, so cache per-player results.
   - `GET /2026/projections?position=WR&week=N&players=<fpid>:<fpid>:...`: the `players` filter works with a single position (not `ALL`) and reaches beyond the top 10. **IDs must be colon-separated**: with commas the API silently ignores the filter and returns the top 10 (found Oct 25 2026). Each row has `points`, `points_ppr` and `points_half` regardless of the `scoring` param. Some players came back empty (e.g., Rashee Rice, Emeka Egbuka); the cause is unknown, so handle a missing projection. This is the best usable per-player FantasyPros signal; `fpid` = `player_id`.
   - `GET /news`, `/injuries`, `/players`: 10 newest/top rows only, and no player or team filter worked. Injuries include `probability_of_playing` and Wed/Thu/Fri practice status (e.g., Limited/DNP), which is useful but limited to 10 players. News rows include title, description, `player_id` and a link.
   - **Quota recovered (Oct 27 2026):** the 10:52 UTC daily run fetched week 8 projections for all 204 ranked players. The Oct 25 lockout lifted within two days, so the limit is probably a daily or rolling quota that the ~100 test calls had used up. Keep the daily fetch as is and watch for 429s in the logs.
-  - **Quota is smaller than ~75/day (found Oct 25 2026):** a full run at 20:51 UTC Oct 25 got a 429 on its first call, after only ~2 calls that Pacific day and ~30 that UTC day, so the limit isn't a simple daily reset; it may be weekly or monthly, and the ~100 test calls on Oct 24–25 likely used it up. Projections then fall back to usage-based catches (small effect, see 4c). **To do:** watch the daily run logs ("projections week N: X players") for when calls succeed again, then size the daily fetch to the real quota (e.g. only the top 10–20 per position, 4–8 calls).
-  - **Rate limit:** no rate-limit headers are sent. After ~75–80 calls in one session (Oct 24 2026) every endpoint returned `429 {"message":"Limit Exceeded"}` (a daily usage-plan quota, likely). There's also a **per-second throttle**: ~6 back-to-back calls trip the same 429 (Oct 25 2026), so the client spaces calls 2 s apart and retries once after 15 s. Budget calls: ingest on a schedule and cache, never call per user query.
+  - **Quota is smaller than ~75/day (found Oct 25 2026):** a full run at 20:51 UTC Oct 25 got a 429 on its first call, after only ~2 calls that Pacific day and ~30 that UTC day, so the limit isn't a simple daily reset; it may be weekly or monthly, and the ~100 test calls on Oct 24-25 likely used it up. Projections then fall back to usage-based catches (small effect, see 4c). **To do:** watch the daily run logs ("projections week N: X players") for when calls succeed again, then size the daily fetch to the real quota (e.g. only the top 10-20 per position, 4-8 calls).
+  - **Rate limit:** no rate-limit headers are sent. After ~75-80 calls in one session (Oct 24 2026) every endpoint returned `429 {"message":"Limit Exceeded"}` (a daily usage-plan quota, likely). There's also a **per-second throttle**: ~6 back-to-back calls trip the same 429 (Oct 25 2026), so the client spaces calls 2 s apart and retries once after 15 s. Budget calls: ingest on a schedule and cache, never call per user query.
   - `GET /compare-players?players=<id>:<id>[:<id>]&position=WR|RB|...` (no season in the path; colon-delimited IDs): returns, for each scoring format (STD/PPR/HALF), **every expert's individual rank for each player**. This is the data behind FantasyPros' "Who Should I Start" tool, so code can compute "X of N experts start A over B". `position=ALL` returns empty lists. With PPR/HALF/STD, a non-top-10 player and a mixed-position pair still untested (hit the quota first).
   - Implication: nflverse FF Rankings stays the primary consensus source. Use FantasyPros per-player projections (and top-10 ECR/start-sit grade when available) as a supplementary, cited signal.
 - [x] Verify `GEMINI_API_KEY` works from the Claude Code cloud env (Oct 24 2026: `gemini-3.5-flash` OK; `gemini-2.5-flash` returns 404 "no longer available to new users")
@@ -233,7 +240,7 @@ Many users will ask about the same players, so cache per-player results.
 - [x] Gemini free-tier limits (author's AI Studio, Oct 24 2026), per model:
   - `gemini-3.5-flash-lite` (**chosen**): 15 requests/minute, 500 requests/day, 250k input tokens/minute.
   - `gemini-3.5-flash`: 1 request/minute, 20 requests/day, 250k input tokens/minute; too few requests for real users.
-  - Requests, not tokens, are the constraint. Step 3: batch news extraction (one call carries all new headlines), so ingest uses ~1–5 calls/day. Step 4: cache decisions per (players, scoring, week); when the daily budget is spent, fall back to the code baseline with a clear "daily AI limit reached" note.
+  - Requests, not tokens, are the constraint. Step 3: batch news extraction (one call carries all new headlines), so ingest uses ~1-5 calls/day. Step 4: cache decisions per (players, scoring, week); when the daily budget is spent, fall back to the code baseline with a clear "daily AI limit reached" note.
   - Step 4 check: run ~10 matchups through both Lite and Flash (~20 requests) and compare reasoning quality before finalizing the decision prompt.
 - [x] Draft evidence packet schema (`startsit.evidence`: numbered items E1..En with kind/text/source_url; `to_text()` is what the LLM sees)
 - [x] Stage 3 prompt (`decide.SYSTEM_PROMPT`, version 2). Override rule: only definite facts the projection hasn't caught (ruled out, inactive, activated, released, suspended, clear role change); a questionable/limited tag may lower confidence but isn't a reason to override (v1 overrode Puka Nacua for being questionable).
@@ -247,4 +254,4 @@ Many users will ask about the same players, so cache per-player results.
 - [x] Supabase connection confirmed (Oct 24 2026): the first manual ingest run on `main` wrote the full season (954 players, 2,408 player-games, 441 week-7 rankings) to Supabase. The Claude Code cloud env **can't** reach Postgres (its proxy carries only HTTP/HTTPS), so development there uses SQLite and a local Postgres; Supabase is reached only from GitHub Actions, Vercel, or a laptop. `DATABASE_URL` must percent-encode special characters in the password (e.g. `#` → `%23`), or the value gets cut off when saved.
 
 ## Timing
-The NFL regular season runs through early January. Shipping an MVP within ~2–3 weeks leaves time to collect real usage and several weeks of evaluation data.
+The NFL regular season runs through early January. Shipping an MVP within ~2-3 weeks leaves time to collect real usage and several weeks of evaluation data.

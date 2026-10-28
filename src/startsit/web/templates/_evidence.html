@@ -6,7 +6,7 @@
     {% for p in packet.players %}
     <div class="head{% if decision and p.player_id == decision.pick %} picked{% endif %}">
       <strong>{{ p.name }}</strong> <span class="pos">{{ p.position }}, {{ p.team or "free agent" }}</span>
-      <span class="baseline">Baseline {{ "%.1f"|format(p.score.points) }} pts{% if p.score.note %} ({{ p.score.note }}){% endif %}</span>
+      <span class="baseline">Projected {{ "%.1f"|format(p.score.points) }} pts{% if p.score.note %} ({{ p.score.note }}){% endif %}</span>
     </div>
     {% endfor %}
     {% for kind, label in kind_labels.items() if packet.items|selectattr("kind", "equalto", kind)|list %}
@@ -17,7 +17,7 @@
       {% for item in p.items_of(kind) %}
       <p id="{{ item.id }}"><span class="id">{{ item.id }}</span> {{ item.text }}{% set href = item.source_url | safe_href %}{% if href %} <a class="src" href="{{ href }}" rel="noopener nofollow" target="_blank">source</a>{% endif %}</p>
       {% else %}
-      <p class="none">—</p>
+      <p class="none">None</p>
       {% endfor %}
     </div>
     {% endfor %}

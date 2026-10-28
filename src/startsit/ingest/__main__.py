@@ -41,12 +41,6 @@ log = logging.getLogger("startsit.ingest")
 
 # The source normally refreshes daily; older than this and "current week" answers go stale.
 STALE_RANKINGS_DAYS = 3
-# News gets a slice of the 500/day Gemini free tier; the rest is for start/sit answers.
-# Hourly runs plus the Sunday-morning and pre-night-game runs make at most ~40 calls a day.
-NEWS_DAILY_LLM_BUDGET = 60
-# Reddit vote extraction (step 6b): a fetch every 6 hours brings a few hundred short comments,
-# ~2-5 calls at 50 per call. Gemini's 500/day: decide 370 + news 60 + benchmark 45 + reddit 20.
-REDDIT_DAILY_LLM_BUDGET = 20
 # The daily stats refresh is due once per day after this time (UTC): nflverse's overnight
 # updates are in by then (6am US Eastern).
 DAILY_REFRESH_AFTER = time(10, 0)
@@ -167,7 +161,7 @@ def run_reddit(db: Database, season: int, now: datetime | None = None) -> dict[s
     """Fetch WDIS comments when due (every 6 hours), then extract votes from any not yet processed."""
     now = now or datetime.now(UTC)
     counts = {"reddit_comments": reddit.fetch_comments(db, season, now) if reddit.due(db, now) else 0}
-    llm = budgeted_gemini(db, "reddit", REDDIT_DAILY_LLM_BUDGET, "reddit extraction disabled")
+    llm = budgeted_gemini(db, "reddit", "reddit extraction disabled")
     if llm is not None:
         result = reddit_extract.extract_votes(db, llm, now)
         counts |= {
@@ -180,7 +174,7 @@ def run_reddit(db: Database, season: int, now: datetime | None = None) -> dict[s
 
 
 def benchmark_llm(db: Database) -> BudgetedLLM | None:
-    return budgeted_gemini(db, "benchmark", benchmark.BENCHMARK_DAILY_LLM_BUDGET, "benchmark skipped")
+    return budgeted_gemini(db, "benchmark", "benchmark skipped")
 
 
 def games_frame(db: Database, season: int) -> pl.DataFrame:
@@ -265,7 +259,7 @@ def main() -> None:
                 games = games_frame(db, args.season)
                 _optional("rankings re-check", lambda: run_rankings(db, rankings.fetch(), games, args.season))
         if args.only in (None, "news"):
-            llm = budgeted_gemini(db, "news", NEWS_DAILY_LLM_BUDGET, "news extraction disabled")
+            llm = budgeted_gemini(db, "news", "news extraction disabled")
             run_news(db, news.fetch_all(), llm, args.season)
         if args.only == "news":
             # Before the benchmark, so Sunday's set sees the morning's crowd votes.

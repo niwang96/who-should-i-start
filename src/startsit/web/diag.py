@@ -12,8 +12,8 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from startsit.db import Database
-from startsit.decide import DECIDE_DAILY_LLM_BUDGET, VISITOR_LIMITS
-from startsit.llm import REQUESTS_PER_MINUTE, utc_day_start, visitor_id
+from startsit.decide import VISITOR_LIMITS
+from startsit.llm import DAILY_BUDGETS, REQUESTS_PER_MINUTE, utc_day_start, visitor_id
 
 ADDRESS_HEADERS = ("x-forwarded-for", "x-real-ip", "x-vercel-forwarded-for")
 
@@ -44,7 +44,7 @@ def limits_report(db: Database, headers: Mapping[str, str], address: str, now: d
             for limit in VISITOR_LIMITS
         ],
         "decide_today": {
-            "limit": DECIDE_DAILY_LLM_BUDGET,
+            "limit": DAILY_BUDGETS["decide"],
             "used": db.llm_calls_since(utc_day_start(now), "decide"),
         },
         "all_calls_last_minute": {

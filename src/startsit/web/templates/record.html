@@ -1,6 +1,6 @@
 {% extends "_layout.html" %}
 
-{% block title %}Track record — Who Should I Start?{% endblock %}
+{% block title %}Who Should I Start? - Track Record{% endblock %}
 {% block description %}How often the AI's start/sit picks beat the experts, scored against actual fantasy points every week.{% endblock %}
 {% block nav %}<a href="/">Ask a question</a>{% endblock %}
 
@@ -93,7 +93,7 @@
               <td>{% for name, pts in m.points.items() %}{{ name }} <span class="muted">{{ "%.1f"|format(pts) }}</span>{{ " vs " if not loop.last }}{% endfor %}
                 <span class="muted">· {{ scoring_labels[m.scoring] }}</span></td>
               <td>{% if m.ai_answered %}{{ verdict(m.pick_hit) }} {{ m.pick }}{% else %}<span class="muted">not asked</span>{% endif %}</td>
-              <td>{% if m.consensus_pick %}{{ verdict(m.consensus_hit) }} {{ m.consensus_pick }}{% else %}<span class="muted">–</span>{% endif %}</td>
+              <td>{% if m.consensus_pick %}{{ verdict(m.consensus_hit) }} {{ m.consensus_pick }}{% else %}<span class="muted">none</span>{% endif %}</td>
               <td>{{ verdict(m.baseline_hit) }} {{ m.baseline_pick }}</td>
               {% if crowd %}<td>{% if m.crowd_pick %}{{ verdict(m.crowd_hit) }} {{ m.crowd_pick }}{% else %}<span class="muted">no lean</span>{% endif %}</td>{% endif %}
               <td><a class="why" href="/record/{{ m.rec_id }}">Why?</a></td>

@@ -159,6 +159,7 @@ button {
 /* Track record page. */
 .record h2 { font-size: 1.4rem; margin-bottom: 0.4rem; }
 .lede { max-width: 46rem; margin-bottom: 1rem; }
+.intro { max-width: 46rem; margin: 0 0 1rem; color: var(--muted); }
 .empty { color: var(--muted); }
 .card h3 { margin: 0 0 0.2rem; font-size: 1.15rem; }
 .card h4 { margin: 0 0 0.4rem; font-size: 0.95rem; }

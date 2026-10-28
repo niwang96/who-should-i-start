@@ -36,6 +36,15 @@ DEFAULT_MODEL = "gemini-3.5-flash-lite"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 # Gemini's free tier allows 15 requests/minute; leave headroom for requests checked at the same moment.
 REQUESTS_PER_MINUTE = 12
+# Gemini's free tier allows 500 requests/day for the model, shared by every purpose. Counting
+# calls before making them can overshoot slightly under concurrency, hence the headroom.
+GEMINI_DAILY_REQUESTS = 500
+DAILY_BUDGETS: dict[str, int] = {
+    "decide": 370,  # start/sit answers on the site (cached answers are free)
+    "news": 55,  # news extraction; the hourly and game-day runs use ~40
+    "benchmark": 45,  # the weekly 30 benchmark matchups, plus retries
+    "reddit": 25,  # crowd votes; at most 5 calls per fetch
+}
 
 
 class LLMError(RuntimeError):
@@ -222,15 +231,16 @@ class BudgetedLLM:
 def budgeted_gemini(
     db: Database,
     purpose: str,
-    daily_budget: int,
     unavailable: str,
     visitor: str | None = None,
     visitor_limits: Sequence[VisitorLimit] = (),
 ) -> BudgetedLLM | None:
-    """A budgeted Gemini client for `purpose`, or None (logging "<unavailable>: <why>") without a key."""
+    """A Gemini client held to `purpose`'s daily budget (DAILY_BUDGETS), or None (logging
+    "<unavailable>: <why>") without a key."""
     try:
         provider = GeminiProvider()
     except LLMError as e:
         log.warning("%s: %s", unavailable, e)
         return None
-    return BudgetedLLM(provider, db, purpose, daily_budget, visitor=visitor, visitor_limits=visitor_limits)
+    budget = DAILY_BUDGETS[purpose]
+    return BudgetedLLM(provider, db, purpose, budget, visitor=visitor, visitor_limits=visitor_limits)
