@@ -51,7 +51,7 @@ Store headline + summary + link only; link out to the source rather than fetchin
 - Numbers go straight to the DB: FantasyPros rankings, nflverse usage. Code computes features (e.g., 3-week snap share trend, consensus rank by scoring format, expected vs. actual points).
 - Text gets structured **once, at ingest time** by a cheap LLM call, then cached:
   - news → `{player, event, severity, date, source_url}`
-  - Reddit comment → `{player, sentiment, claim, upvotes, source_url}`
+  - Reddit comment → `{player, sentiment, claim, source_url}` (RSS has no upvotes)
 
 ### Stage 2 — Evidence packet (code, no LLM)
 On a query, code assembles a compact per-player summary: consensus rank, usage trend, expected vs. actual points, latest structured news items, Reddit sentiment counts. Target a few hundred tokens, not raw articles.
