@@ -292,3 +292,30 @@ def test_no_retry_when_the_deadline_leaves_too_little_time(db):
     decision = decide(db, make_packet(), budgeted(db, provider), deadline=1)
     assert decision.fallback == "invalid" and len(provider.prompts) == 1  # the bad answer, no retry
     assert decide(db, make_packet(), budgeted(db, FakeProvider(responses=[answer()]))).source == "llm"
+
+
+@pytest.mark.parametrize(
+    "cited,accepted",
+    [
+        (["E1", "E3"], False),  # consensus: the projection already prices it in
+        (["E2"], True),  # news: a definite fact the projection may not have caught
+    ],
+)
+def test_going_against_the_baseline_needs_a_definite_fact(cited, accepted):
+    ids = " ".join(f"[{i}]" for i in cited)
+    raw = answer(pick="P1", confidence="low", disagreement=f"Smith over Nacua {ids}.")
+    decision, problems = validate(raw, make_packet())
+    assert (decision is not None) == accepted
+    if not accepted:
+        assert problems == [
+            "the pick goes against the baseline without citing a definite fact (an availability, injury "
+            "report or news item) in baseline_disagreement; pick the baseline pick unless one applies"
+        ]
+
+
+def test_a_rejected_override_gets_the_retry_and_then_the_baseline(db):
+    soft = answer(pick="P1", confidence="low", disagreement="Smith has the better matchup [E1].")
+    provider = FakeProvider(responses=[soft, answer()])
+    decision = decide(db, make_packet(), budgeted(db, provider))
+    assert (decision.source, decision.pick) == ("llm", "NACUA")  # the retry took the baseline pick
+    assert "without citing a definite fact" in provider.prompts[1]

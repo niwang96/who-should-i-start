@@ -1,3 +1,4 @@
+import re
 from datetime import UTC, datetime
 
 import pytest
@@ -7,7 +8,8 @@ from startsit import benchmark
 from startsit.evaluate import BACKFILL, BENCHMARK
 from startsit.llm import BudgetedLLM, FakeProvider, RateLimited
 
-# Valid for any two-player packet here: cites the first player's consensus items, states no numbers.
+# Valid for any two-player packet here when "pick" is the baseline pick (see agree): cites the first
+# player's consensus items, states no numbers.
 ANSWER = {
     "pick": "P1",
     "confidence": "low",
@@ -18,6 +20,13 @@ ANSWER = {
     "summary": "A close call that leans on the consensus [E1].",
     "baseline_disagreement": "The consensus edge outweighs the rest [E1].",
 }
+
+
+def agree(prompt):
+    """A valid answer that takes the baseline pick (going against it would need a news fact)."""
+    return dict(ANSWER, pick=re.search(r"Baseline pick: (P\d)", prompt)[1])
+
+
 SATURDAY = datetime(2026, 10, 31, 18, 0, tzinfo=UTC)
 SUNDAY_MORNING = datetime(2026, 11, 1, 15, 0, tzinfo=UTC)  # 10am Eastern (EST from Nov 1)
 SUNDAY_KICKOFF = datetime(2026, 11, 1, 18, 0, tzinfo=UTC)
@@ -78,7 +87,7 @@ def test_matchups_pair_rank_neighbors_whose_games_have_not_started(week8):
 
 
 def test_run_asks_the_ai_and_logs_benchmark_recommendations(week8):
-    provider = FakeProvider(respond=lambda prompt: ANSWER)
+    provider = FakeProvider(respond=agree)
     llm = BudgetedLLM(provider, week8, "benchmark", 10, clock=lambda: SUNDAY_MORNING)
     sleeps: list[float] = []
     assert benchmark.run(week8, llm, 2026, 8, clock=lambda: SUNDAY_MORNING, sleep=sleeps.append) == 3
@@ -94,7 +103,7 @@ def test_run_asks_the_ai_and_logs_benchmark_recommendations(week8):
 
 
 def test_run_stops_when_the_budget_is_spent(week8):
-    llm = BudgetedLLM(FakeProvider(respond=lambda prompt: ANSWER), week8, "benchmark", 1, clock=lambda: SUNDAY_MORNING)
+    llm = BudgetedLLM(FakeProvider(respond=agree), week8, "benchmark", 1, clock=lambda: SUNDAY_MORNING)
     assert benchmark.run(week8, llm, 2026, 8, clock=lambda: SUNDAY_MORNING, sleep=lambda s: None) == 1
 
 
@@ -108,7 +117,7 @@ def test_backfill_picks_the_newest_week_whose_window_passed_without_a_set(week8)
 
 
 def test_a_backfilled_set_is_asked_and_logged_as_of_the_past(week8):
-    llm = BudgetedLLM(FakeProvider(respond=lambda prompt: ANSWER), week8, "benchmark", 10, clock=lambda: MONDAY)
+    llm = BudgetedLLM(FakeProvider(respond=agree), week8, "benchmark", 10, clock=lambda: MONDAY)
     n = benchmark.run(
         week8, llm, 2026, 8, as_of=SUNDAY_MORNING, tag=BACKFILL, clock=lambda: MONDAY, sleep=lambda s: None
     )
@@ -125,7 +134,7 @@ def test_a_set_stops_when_the_ai_does_not_answer_and_resumes_later(week8):
         calls["n"] += 1
         if calls["n"] == 2:
             raise RateLimited("busy")
-        return ANSWER
+        return agree(prompt)
 
     llm = BudgetedLLM(FakeProvider(respond=respond), week8, "benchmark", 10, clock=lambda: SUNDAY_MORNING)
     run = dict(clock=lambda: SUNDAY_MORNING, sleep=lambda s: None)
@@ -140,8 +149,14 @@ def test_a_set_stops_when_the_ai_does_not_answer_and_resumes_later(week8):
 
 def test_an_invalid_answer_is_logged_and_its_retry_counts_toward_the_pause(week8):
     bad = dict(ANSWER, pick="P9")
-    replies = [bad, bad, ANSWER, ANSWER]
-    llm = BudgetedLLM(FakeProvider(responses=replies), week8, "benchmark", 10, clock=lambda: SUNDAY_MORNING)
+    replies = iter([bad, bad])
+    llm = BudgetedLLM(
+        FakeProvider(respond=lambda prompt: next(replies, None) or agree(prompt)),
+        week8,
+        "benchmark",
+        10,
+        clock=lambda: SUNDAY_MORNING,
+    )
     sleeps: list[float] = []
     assert benchmark.run(week8, llm, 2026, 8, clock=lambda: SUNDAY_MORNING, sleep=sleeps.append) == 3
     assert sleeps == [2 * benchmark.CALL_SPACING, benchmark.CALL_SPACING]  # two calls, then one
