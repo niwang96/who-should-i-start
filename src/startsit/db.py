@@ -627,6 +627,41 @@ class Database:
             ),
         )
 
+    def team_quarterbacks(self, season: int, team: str, before_week: int, limit: int = 2) -> list[dict[str, Any]]:
+        """The team's quarterbacks by offensive snaps for it this season before `before_week`, most first:
+        player_id, name, snaps."""
+        return self.query(
+            "SELECT pw.player_id, p.name, SUM(COALESCE(pw.offense_snaps, 0)) AS snaps FROM player_weeks pw "
+            "JOIN players p ON p.player_id = pw.player_id "
+            "WHERE pw.season = ? AND pw.week < ? AND pw.team = ? AND p.position = 'QB' "
+            "GROUP BY pw.player_id, p.name ORDER BY snaps DESC, p.name LIMIT ?",
+            (season, before_week, team, limit),
+        )
+
+    def team_role_news(self, team: str, position: str, since: str, until: str) -> list[dict[str, Any]]:
+        """Role-change news facts in [since, until] about the team's players at `position` (e.g. a new
+        starting quarterback), newest first, with the player's name."""
+        return self.query(
+            "SELECT f.*, p.name FROM news_facts f JOIN players p ON p.player_id = f.player_id "
+            "WHERE p.team = ? AND p.position = ? AND f.event = 'role_change' "
+            "AND f.published_at >= ? AND f.published_at <= ? ORDER BY f.published_at DESC",
+            (team, position, since, until),
+        )
+
+    def points_allowed(self, season: int, before_week: int, position: str, points_column: str) -> list[dict[str, Any]]:
+        """Fantasy points each defense allowed to `position` before `before_week`: defense, games, points.
+
+        `points_column` is a fantasy points column of player_weeks, named by code (scoring.column).
+        """
+        return self.query(
+            "SELECT defense, COUNT(*) AS games, SUM(points) AS points FROM ("
+            f"SELECT pw.opponent AS defense, pw.week, SUM(COALESCE(pw.{points_column}, 0)) AS points "
+            "FROM player_weeks pw JOIN players p ON p.player_id = pw.player_id "
+            "WHERE pw.season = ? AND pw.week < ? AND p.position = ? AND pw.opponent IS NOT NULL "
+            "GROUP BY pw.opponent, pw.week) per_game GROUP BY defense",
+            (season, before_week, position),
+        )
+
     # --- players ---------------------------------------------------------------
 
     def all_players(self) -> list[PlayerRow]:

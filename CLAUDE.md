@@ -209,6 +209,12 @@ Many users will ask about the same players, so cache per-player results.
    - `decide.validate` now rejects a pick against the baseline unless `baseline_disagreement` cites an `availability`, `injury` or `news` item (`OVERRIDE_KINDS`); the model gets the usual retry with the problem, then the baseline. Prompt (`PROMPT_VERSION` 7): usage, matchups, betting lines and fan opinion never justify an override, and the crowd no longer decides close calls (it can still be mentioned).
    - The report lists every override with actual points, the kinds of evidence cited and the reason (`Matchup.reason`, `reason_kinds`), so the overrides can be checked in the ingest logs each week.
    - Live check (week 9 data): 3 questions answered by the AI on the first call in ~1.6 s each (Gemini is fast again).
+10. **Team and opponent context** (Nov 3 2026, after Derrick Henry vs Jalen Coker: the Ravens were down to their third quarterback, and the tool couldn't see it, because a packet only held news about the asked players):
+   - `team` items (`evidence.team_facts`): the team's top two quarterbacks this season by snaps (`Database.team_quarterbacks`) who can't play this week (`evidence.unavailable`: this week's news status out/doubtful, else the injury report, else a non-active roster status), and this week's quarterback role-change news (`Database.team_role_news`, e.g. "The Ravens named Joe Fagnano the starter"), with that quarterback's snaps this season (0 for Fagnano). A player's own news stays in his `news` items.
+   - `team` is in `decide.OVERRIDE_KINDS`: a starter out is a definite fact the projection may not have caught up with.
+   - `defense` items (`evidence.defense_facts`): the opponent's fantasy points allowed per game to the player's position this season (question's scoring, weeks before the one asked), ranked among all defenses (`Database.points_allowed`). Matchup context like the betting lines, so not an override reason.
+   - Prompt `PROMPT_VERSION` 8 explains both. The web evidence grid labels them "Team news" and "Opponent defense".
+   - Live check (week 9, Tuesday news): Henry's packet got "BAL quarterback news: The Ravens named Joe Fagnano the starter (0 snaps for BAL this season)" and "JAX defense vs RBs: 16.8 PPR pts allowed per game, the fewest of 32 teams". The AI cited both and still picked Henry in PPR (expert edge 1.6 pts), half-PPR (3.4) and standard (5.2).
 
 ## Open to-dos
 - [x] Request FantasyPros API key (approved; key received)

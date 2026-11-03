@@ -50,7 +50,7 @@ VISITOR_LIMITS = (
     VisitorLimit(6, timedelta(minutes=10), "10 minutes"),
     VisitorLimit(25, timedelta(days=1), "day"),
 )
-PROMPT_VERSION = 7  # bump when the prompt or schema changes, so cached answers aren't reused
+PROMPT_VERSION = 8  # bump when the prompt or schema changes, so cached answers aren't reused
 MAX_ATTEMPTS = 2
 # Baseline confidence from the projection gap (points): at least HIGH_MARGIN is high, MEDIUM_MARGIN medium.
 HIGH_MARGIN = 5.0
@@ -87,8 +87,13 @@ Rules:
   status is already priced into the consensus; it can lower your confidence but is not by itself
   a reason to override. Usage trends, matchups, betting lines and fan opinion are already priced
   in too: they never justify going against the baseline. If your pick differs from the baseline
-  pick, explain why in baseline_disagreement, citing the availability, injury report or news fact;
-  otherwise leave it empty.
+  pick, explain why in baseline_disagreement, citing the availability, injury report, news or team
+  fact; otherwise leave it empty.
+- team facts state the player's team quarterback situation this week (a starter ruled out, a backup
+  named the starter). That is a definite fact the projection may not have caught up with, and it
+  can justify going against the baseline for that team's players.
+- defense facts rank the opponent by fantasy points allowed to the position. Like the betting
+  lines, they're matchup context already priced into the consensus.
 - crowd facts count start/sit votes from Reddit fans this week. They're opinion, not definite
   facts: mention them if they help, but they never decide the pick, and a reason a fan gives
   counts only as that fan's claim.
@@ -187,7 +192,7 @@ SUMMARY_MAX_CHARS = 900
 # Evidence that can state a definite fact the consensus hasn't caught up with (ruled out, inactive,
 # activated, a role change). Only these can justify a pick against the baseline: through week 8,
 # overrides were right 8 of 18 times, a coin flip, so softer reasons only cost picks.
-OVERRIDE_KINDS = {"availability", "injury", "news"}
+OVERRIDE_KINDS = {"availability", "injury", "news", "team"}
 # Shown as "the expert-consensus pick" to users, who don't know what the baseline is.
 FALLBACK_PICK = "so this is the expert-consensus pick"
 _DASH = re.compile(r"\s*[\u2014\u2013]\s*")
@@ -276,7 +281,7 @@ def validate(raw: Any, packet: EvidencePacket) -> tuple[Decision | None, list[st
         elif not {i.kind for i in packet.items if i.id in cited} & OVERRIDE_KINDS:
             problems.append(
                 "the pick goes against the baseline without citing a definite fact (an availability, injury "
-                "report or news item) in baseline_disagreement; pick the baseline pick unless one applies"
+                "report, news or team item) in baseline_disagreement; pick the baseline pick unless one applies"
             )
     summary = plain(str(raw.get("summary", "")))
     if not summary:
