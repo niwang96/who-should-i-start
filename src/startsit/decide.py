@@ -89,9 +89,10 @@ Rules:
   in too: they never justify going against the baseline. If your pick differs from the baseline
   pick, explain why in baseline_disagreement, citing the availability, injury report, news or team
   fact; otherwise leave it empty.
-- team facts state the player's team quarterback situation this week (a starter ruled out, a backup
-  named the starter). That is a definite fact the projection may not have caught up with, and it
-  can justify going against the baseline for that team's players.
+- team facts state this week's news about the player's teammates: key teammates ruled out (the
+  starting quarterback, the lead back, a top target) and role changes (a backup named the starter).
+  That is a definite fact the projection may not have caught up with, and it can justify going
+  against the baseline for that team's players.
 - defense facts rank the opponent by fantasy points allowed to the position. Like the betting
   lines, they're matchup context already priced into the consensus.
 - crowd facts count start/sit votes from Reddit fans this week. They're opinion, not definite

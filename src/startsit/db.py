@@ -627,25 +627,26 @@ class Database:
             ),
         )
 
-    def team_quarterbacks(self, season: int, team: str, before_week: int, limit: int = 2) -> list[dict[str, Any]]:
-        """The team's quarterbacks by offensive snaps for it this season before `before_week`, most first:
-        player_id, name, snaps."""
+    def team_usage(self, season: int, team: str, before_week: int) -> list[dict[str, Any]]:
+        """The team's players by their usage for it this season before `before_week`: player_id, name,
+        position, snaps, targets, carries (most snaps first)."""
         return self.query(
-            "SELECT pw.player_id, p.name, SUM(COALESCE(pw.offense_snaps, 0)) AS snaps FROM player_weeks pw "
-            "JOIN players p ON p.player_id = pw.player_id "
-            "WHERE pw.season = ? AND pw.week < ? AND pw.team = ? AND p.position = 'QB' "
-            "GROUP BY pw.player_id, p.name ORDER BY snaps DESC, p.name LIMIT ?",
-            (season, before_week, team, limit),
+            "SELECT pw.player_id, p.name, p.position, SUM(COALESCE(pw.offense_snaps, 0)) AS snaps, "
+            "SUM(COALESCE(pw.targets, 0)) AS targets, SUM(COALESCE(pw.carries, 0)) AS carries "
+            "FROM player_weeks pw JOIN players p ON p.player_id = pw.player_id "
+            "WHERE pw.season = ? AND pw.week < ? AND pw.team = ? "
+            "GROUP BY pw.player_id, p.name, p.position ORDER BY snaps DESC, p.name",
+            (season, before_week, team),
         )
 
-    def team_role_news(self, team: str, position: str, since: str, until: str) -> list[dict[str, Any]]:
-        """Role-change news facts in [since, until] about the team's players at `position` (e.g. a new
-        starting quarterback), newest first, with the player's name."""
+    def team_role_news(self, team: str, since: str, until: str) -> list[dict[str, Any]]:
+        """Role-change news facts in [since, until] about the team's players (e.g. a new starting
+        quarterback, a back taking over the carries), newest first, with the player's name and position."""
         return self.query(
-            "SELECT f.*, p.name FROM news_facts f JOIN players p ON p.player_id = f.player_id "
-            "WHERE p.team = ? AND p.position = ? AND f.event = 'role_change' "
+            "SELECT f.*, p.name, p.position FROM news_facts f JOIN players p ON p.player_id = f.player_id "
+            "WHERE p.team = ? AND f.event = 'role_change' "
             "AND f.published_at >= ? AND f.published_at <= ? ORDER BY f.published_at DESC",
-            (team, position, since, until),
+            (team, since, until),
         )
 
     def points_allowed(self, season: int, before_week: int, position: str, points_column: str) -> list[dict[str, Any]]:
