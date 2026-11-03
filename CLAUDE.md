@@ -155,6 +155,7 @@ Many users will ask about the same players, so cache per-player results.
          - One card per group, in this order: weekly benchmark, backfill, questions asked on the site.
          - Each card has: AI / consensus / baseline hit-rate tiles (AI with a 95% margin of error); a small-sample note under 100 decided matchups; a by-week table; the AI-vs-baseline overrides with the list of matchups (pick, points, right/wrong); and hit rate by confidence.
          - The report is cached per process for an hour (`RECORD_CACHE_SECONDS`); it changes once a day.
+         - Every ingest run also prints the report (`evaluate.report_text`) to its log and its GitHub step summary (`ingest.yml`, Summarize), so results can be read from Actions without the site or the database. A failure there doesn't fail the run (`tee` keeps the step's exit status); the error shows in the log.
          - The page frame is shared via `templates/_layout.html`.
        - **"Why" view** (Oct 28 2026, asked for after a Wan'Dale Robinson vs Omar Cooper pick):
          - Each card on `/record` lists all its scored matchups: players with actual points, and the AI, consensus and baseline picks, each right/wrong.

@@ -76,6 +76,17 @@ jobs:
               for r in db.recent_runs(12):
                   print(f"| {r['source']} | {r['season']} | {r['max_week']} | {r['row_count']} |")
           PY
+          # The track record (python -m startsit.evaluate's report), in the summary and the log.
+          python - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          from startsit.db import Database
+          from startsit.evaluate import build_report, report_text
+          with Database() as db:
+              season = db.latest_season()
+              if season is not None:
+                  print("\n## Track record\n\n```")
+                  print(report_text(build_report(db, season)))
+                  print("```")
+          PY
       # Without Supabase, keep the SQLite file as an artifact. Each run is a full-season
       # refresh, but rankings history only accumulates in a persistent database.
       - if: ${{ env.DATABASE_URL == '' }}
