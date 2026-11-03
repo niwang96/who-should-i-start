@@ -146,7 +146,33 @@ def test_report_compares_the_picks_on_the_matchups_the_ai_answered(week):
     week.upsert(
         "recommendations",
         [
-            rec("ai-right-override", ab, pick="A", baseline_pick="B", confidence="high", crowd_pick="A"),
+            rec(
+                "ai-right-override",
+                ab,
+                pick="A",
+                baseline_pick="B",
+                confidence="high",
+                crowd_pick="A",
+                decision_json=json.dumps({"baseline_disagreement": "Player B was ruled out [E2] (see E9, E1)."}),
+                packet_json=json.dumps(
+                    {
+                        "players": [
+                            {
+                                "player_id": "A",
+                                "name": "Player A",
+                                "team": "PHI",
+                                "items": [{"id": "E1", "kind": "usage"}],
+                            },
+                            {
+                                "player_id": "B",
+                                "name": "Player B",
+                                "team": "DAL",
+                                "items": [{"id": "E2", "kind": "news"}],
+                            },
+                        ]
+                    }
+                ),
+            ),
             rec("ai-wrong", ab, pick="B", baseline_pick="B", source="cache", confidence="low"),  # no crowd lean
             rec("no-ai", ab, pick="B", source="baseline", crowd_pick="B"),  # counted as a matchup, not in the rates
             rec("bench", ab, pick="A", visitor=evaluate.BENCHMARK),
@@ -174,6 +200,7 @@ def test_report_compares_the_picks_on_the_matchups_the_ai_answered(week):
     )
     assert override.points == {"Player A": 20.0, "Player B": 12.0} and override.overrode
     assert (override.crowd_pick, override.crowd_hit) == ("Player A", 1)
+    assert override.reason_kinds == ("news", "usage")  # in citation order; E9 isn't in the packet
     assert report.overrides("benchmark") == []  # it agreed with the baseline
     assert len(report.matchups["users"]) == 3
     no_ai = next(m for m in report.matchups["users"] if m.rec_id == "no-ai")
@@ -182,6 +209,10 @@ def test_report_compares_the_picks_on_the_matchups_the_ai_answered(week):
     text = evaluate.report_text(report)
     assert "users:\n    week 7: 2 AI-answered | AI 1/2 (50%) | baseline 0/2 (0%)" in text
     assert "| crowd 1/1 (100%) | AI overrides" in text
+    assert (
+        "  AI overrides of the baseline (actual points; evidence cited; reason):\n"
+        "    week 7 ppr: right Player A 20 over Player B 12; news, usage; Player B was ruled out [E2] (see E9, E1)."
+    ) in text
     assert "|| all 3: baseline 0/3 (0%) | consensus 0/3 (0%) | crowd 1/2 (50%)" in text
     assert (
         "benchmark:" in text

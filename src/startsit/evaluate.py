@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -35,6 +36,7 @@ BENCHMARK = "benchmark"
 BACKFILL = "benchmark-backfill"
 GROUPS = {BENCHMARK: "benchmark", BACKFILL: "backfill"}  # anything else is a real user
 AI_SOURCES = {"llm", "cache"}
+REASON_CHARS = 160  # of an override's reason, in the text report
 
 
 def actual_points(db: Database, player: dict[str, Any], season: int, week: int, scoring: Scoring) -> float | None:
@@ -201,6 +203,8 @@ class Matchup:
     consensus_hit: int | None
     crowd_pick: str | None = None
     crowd_hit: int | None = None
+    reason: str = ""  # why the AI went against the baseline (its baseline_disagreement), if it did
+    reason_kinds: tuple[str, ...] = ()  # the kinds of evidence that reason cites, e.g. ("news",)
 
     @property
     def overrode(self) -> bool:
@@ -209,8 +213,12 @@ class Matchup:
 
     @staticmethod
     def from_row(row: dict[str, Any]) -> Matchup:
-        names = {p["player_id"]: p["name"] for p in json.loads(row["packet_json"])["players"]}
+        players = json.loads(row["packet_json"])["players"]
+        names = {p["player_id"]: p["name"] for p in players}
         points = json.loads(row["points_json"])
+        reason = json.loads(row["decision_json"]).get("baseline_disagreement", "")
+        kinds = {i["id"]: i["kind"] for p in players for i in p.get("items", [])}
+        cited = [kinds[i] for i in dict.fromkeys(re.findall(r"\bE\d+\b", reason)) if i in kinds]
         return Matchup(
             rec_id=row["rec_id"],
             week=row["week"],
@@ -225,6 +233,8 @@ class Matchup:
             consensus_hit=row["consensus_hit"],
             crowd_pick=names.get(row["crowd_pick"]) if row["crowd_pick"] else None,
             crowd_hit=row["crowd_hit"],
+            reason=reason,
+            reason_kinds=tuple(dict.fromkeys(cited)),
         )
 
 
@@ -281,6 +291,16 @@ def report_text(report: Report) -> str:
             )
         conf = report.totals[group].by_confidence
         lines.append("  AI by confidence: " + ", ".join(f"{c} {conf[c]}" for c in CONFIDENCES))
+        overrides = report.overrides(group)
+        if overrides:
+            lines.append("  AI overrides of the baseline (actual points; evidence cited; reason):")
+        for m in overrides:
+            verdict = "right" if m.pick_hit == 1 else "wrong" if m.pick_hit == 0 else "tie"
+            lines.append(
+                f"    week {m.week} {m.scoring}: {verdict:5} {m.pick} {m.points[m.pick]:g} over "
+                f"{m.baseline_pick} {m.points[m.baseline_pick]:g}; {', '.join(m.reason_kinds) or 'no ids'}; "
+                f"{m.reason[:REASON_CHARS]}"
+            )
     if len(lines) == 1:
         lines.append("Nothing scored yet.")
     return "\n".join(lines)
