@@ -207,6 +207,9 @@ def test_reddit_is_readable_from_this_runner():
     assert any(status.startswith("200") for status in results.values()), f"every route blocked:\n{report}"
 
 
+BUSY_THREAD_COMMENTS = 40  # enough comments that some must be replies naming players
+
+
 def test_reddit_wdis_comments_become_crowd_votes(gemini, live_db):
     # Step 6b end to end on live data: find today's WDIS threads, read one thread's comments with
     # the real fetcher (60 s after the search, waiting out a 429 once), and extract votes in one
@@ -239,4 +242,8 @@ def test_reddit_wdis_comments_become_crowd_votes(gemini, live_db):
     )[:15]:
         print(f"  {v['verdict']:5} {v['player_id']}  <- {v['text'][:90]!r}  ({v['reason']})")
     assert result.calls == 1 and result.stopped_early is None
+    if result.votes == 0 and len(comments) < BUSY_THREAD_COMMENTS:
+        # A new day's thread starts with questions; replies (the votes) come later. Oct 28's
+        # 48-comment thread gave 23 votes; Nov 3's 13-comment one, an hour old, gave none.
+        pytest.skip(f"the thread has only {len(comments)} comments, too early for replies")
     assert result.votes > 0, "no votes from a busy WDIS thread: check the prompt"
