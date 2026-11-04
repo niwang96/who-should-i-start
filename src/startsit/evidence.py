@@ -18,7 +18,7 @@ import re
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Literal, NamedTuple, cast
+from typing import Any, Literal, NamedTuple, cast
 from zoneinfo import ZoneInfo
 
 from startsit import baseline
@@ -42,7 +42,9 @@ from startsit.scoring import LABELS, SCORINGS, Scoring, column, reception_discou
 
 NFLVERSE_URL = "https://github.com/nflverse/nflverse-data"
 
-EvidenceKind = Literal["availability", "consensus", "projection", "matchup", "usage", "injury", "news", "crowd"]
+EvidenceKind = Literal[
+    "availability", "team", "consensus", "projection", "matchup", "defense", "usage", "injury", "news", "crowd"
+]
 
 NEWS_LOOKBACK = timedelta(days=7)
 NEWS_PER_PLAYER = 3
@@ -51,6 +53,15 @@ GAME_LENGTH = timedelta(hours=4)  # kickoff to final whistle, with margin
 CROWD_REASONS = 2  # stated reasons quoted in the crowd item, newest first
 # The crowd pick needs a lead of this many net votes (start minus sit) over every other player.
 CROWD_MIN_LEAD = 2
+# Game statuses that make a teammate's absence a definite fact: news or the injury report.
+OUT_STATUSES = {"out", "doubtful"}
+SKILL_POSITIONS = ("QB", "RB", "WR", "TE")
+# Key teammates, whose absence changes a player's week: the top two quarterbacks by snaps, backs
+# with this share of the team's carries, receivers and tight ends with this share of its targets.
+KEY_QBS = 2
+KEY_CARRY_SHARE = 0.25
+KEY_TARGET_SHARE = 0.15
+TEAMMATE_NEWS = 3  # role-change news items about teammates, newest first
 
 
 @dataclass(frozen=True)
@@ -63,6 +74,28 @@ class Question:
     @property
     def label(self) -> str:
         return LABELS[self.scoring]
+
+
+@dataclass(frozen=True)
+class TeammateOut:
+    """A key teammate (KEY_QBS, KEY_CARRY_SHARE, KEY_TARGET_SHARE) who can't play this week."""
+
+    name: str
+    role: str  # e.g. "QB, 224 snaps for BAL this season"
+    status: str  # e.g. "out (RotoWire, 2026-11-02)"
+    source_url: str | None
+    top_qb: bool = False  # one of the team's top two quarterbacks
+
+
+@dataclass(frozen=True)
+class DefenseRank:
+    """How many fantasy points the opponent's defense allows to the player's position."""
+
+    defense: str
+    per_game: float  # in the question's scoring
+    rank: int  # 1 = fewest points allowed (toughest matchup)
+    teams: int
+    games: int
 
 
 @dataclass(frozen=True)
@@ -82,6 +115,9 @@ class PlayerContext:
     projection: ProjectionRow | None = None  # FantasyPros per-format projection
     news_status: NewsFactRow | None = None  # newest news fact this week that states a game status
     crowd: list[CrowdVoteRow] = field(default_factory=list)  # this week's Reddit votes, newest first
+    teammates_out: list[TeammateOut] = field(default_factory=list)  # key teammates, not the player himself
+    teammate_news: list[dict[str, Any]] = field(default_factory=list)  # teammates' role changes this week, with role
+    defense: DefenseRank | None = None  # the opponent's, against the player's position
 
     @property
     def crowd_starts(self) -> int:
@@ -273,6 +309,94 @@ def game_over_by(game: GameRow) -> datetime | None:
     return datetime.fromisoformat(f"{game['gameday']}T23:59:59").replace(tzinfo=EASTERN).astimezone(UTC)
 
 
+def unavailable(db: Database, player_id: str, q: Question, since: str, until: str) -> tuple[str, str | None] | None:
+    """Why the player can't play this week, with a source link, or None if nothing says so.
+
+    This week's newest news status decides when there is one (it beats a stale injury report),
+    then the injury report, then the roster.
+    """
+    news = db.latest_news_status(player_id, since, until)
+    if news is not None:
+        if news["game_status"] not in OUT_STATUSES:
+            return None
+        return f"{news['game_status']} ({news['source']}, {news['published_at'][:10]})", news["url"]
+    injury = db.injury(player_id, q.season, q.week)
+    if injury and (injury["report_status"] or "").lower() in OUT_STATUSES:
+        return f"{(injury['report_status'] or '').lower()} (week {q.week} injury report)", NFLVERSE_URL
+    roster = db.roster_status(player_id, q.season, q.week)
+    if roster and roster["status"] and roster["status"] not in baseline.PLAYABLE_STATUSES:
+        return f"{baseline.roster_status_label(roster['status'])} (roster)", NFLVERSE_URL
+    return None
+
+
+@dataclass(frozen=True)
+class TeamUsage:
+    """Each player's usage for one team this season (`Database.team_usage`), for role descriptions."""
+
+    team: str
+    rows: list[dict[str, Any]]
+
+    def share(self, row: dict[str, Any], stat: str) -> float:
+        total = sum(r[stat] or 0 for r in self.rows)
+        return (row[stat] or 0) / total if total else 0.0
+
+    def role(self, row: dict[str, Any] | None, position: str) -> str:
+        """e.g. "QB, 224 snaps for BAL this season", "RB, 41% of BAL's carries this season"."""
+        if row is None:
+            return f"{position}, hasn't played for {self.team} this season"
+        if position == "QB":
+            return f"QB, {_plural(int(row['snaps'] or 0), 'snap')} for {self.team} this season"
+        stat = "carries" if position == "RB" else "targets"
+        return f"{position}, {self.share(row, stat):.0%} of {self.team}'s {stat} this season"
+
+    def key_players(self) -> list[tuple[dict[str, Any], bool]]:
+        """The key teammates (see KEY_QBS), each with whether he's one of the top two quarterbacks."""
+        qbs = [r for r in self.rows if r["position"] == "QB"][:KEY_QBS]  # rows are by snaps, most first
+        others = [
+            r
+            for r in self.rows
+            if (r["position"] == "RB" and self.share(r, "carries") >= KEY_CARRY_SHARE)
+            or (r["position"] in ("WR", "TE") and self.share(r, "targets") >= KEY_TARGET_SHARE)
+        ]
+        return [(r, True) for r in qbs] + [(r, False) for r in others]
+
+
+def teammates_out(
+    db: Database, player_id: str, usage: TeamUsage, q: Question, since: str, until: str
+) -> list[TeammateOut]:
+    """The team's key players this season who can't play this week, other than the player."""
+    out = []
+    for row, top_qb in usage.key_players():
+        if row["player_id"] != player_id and (why := unavailable(db, row["player_id"], q, since, until)):
+            out.append(TeammateOut(row["name"], usage.role(row, row["position"]), *why, top_qb=top_qb))
+    return out
+
+
+def teammate_news(db: Database, player_id: str, usage: TeamUsage, since: str, until: str) -> list[dict[str, Any]]:
+    """This week's role-change news about the player's teammates (e.g. a new starter named), the
+    newest per teammate, up to TEAMMATE_NEWS, each with his role so far (a backup named starter has few snaps)."""
+    newest: dict[str, dict[str, Any]] = {}
+    for fact in db.team_role_news(usage.team, since, until):
+        if fact["player_id"] != player_id:
+            newest.setdefault(fact["player_id"], fact)
+    rows = {r["player_id"]: r for r in usage.rows}
+    return [fact | {"role": usage.role(rows.get(pid), fact["position"])} for pid, fact in newest.items()][
+        :TEAMMATE_NEWS
+    ]
+
+
+def defense_rank(db: Database, position: str, opponent: str, q: Question) -> DefenseRank | None:
+    """The opponent's fantasy points allowed per game to `position` this season, ranked among all defenses."""
+    if position not in SKILL_POSITIONS:
+        return None
+    rows = {r["defense"]: r for r in db.points_allowed(q.season, q.week, position, column("fp", q.scoring))}
+    per_game = {d: float(r["points"]) / r["games"] for d, r in rows.items() if r["games"]}
+    if opponent not in per_game:
+        return None
+    rank = 1 + sum(v < per_game[opponent] for v in per_game.values())
+    return DefenseRank(opponent, per_game[opponent], rank, len(per_game), int(rows[opponent]["games"]))
+
+
 def load_context(db: Database, player_id: str, q: Question) -> PlayerContext:
     player = db.player(player_id)
     if player is None:
@@ -305,6 +429,9 @@ def load_context(db: Database, player_id: str, q: Question) -> PlayerContext:
     status_since = max(since, utc_iso(last_game_over)) if last_game_over else since
     news_status = db.latest_news_status(player_id, status_since, until)
     crowd = db.crowd_votes(player_id, status_since, until)  # this week's threads, not last week's
+    game = db.team_game(q.season, q.week, team) if team else None
+    opponent = (game["away_team"] if game["home_team"] == team else game["home_team"]) if game else None
+    team_usage = TeamUsage(team, db.team_usage(q.season, team, q.week)) if team else None
     if news_status and news_status not in news:
         news = sorted([*news, news_status], key=lambda n: n["published_at"], reverse=True)
     return PlayerContext(
@@ -314,13 +441,16 @@ def load_context(db: Database, player_id: str, q: Question) -> PlayerContext:
         ranking=db.latest_ranking(player_id, q.season, q.week, through_day=asked_on),
         usage=usage,
         injury=db.injury(player_id, q.season, q.week),
-        game=db.team_game(q.season, q.week, team) if team else None,
+        game=game,
         news=news,
         on_bye=on_bye,
         missed_games=missed,
         projection=db.latest_projection(player_id, q.season, q.week, through_day=asked_on),
         news_status=news_status,
         crowd=crowd,
+        teammates_out=teammates_out(db, player_id, team_usage, q, status_since, until) if team_usage else [],
+        teammate_news=teammate_news(db, player_id, team_usage, status_since, until) if team_usage else [],
+        defense=defense_rank(db, player["position"], opponent, q) if opponent else None,
     )
 
 
@@ -352,6 +482,48 @@ def availability_facts(ctx: PlayerContext, q: Question) -> list[Fact]:
     if ctx.on_bye:
         facts.append(Fact("availability", f"{ctx.team} is on bye in week {q.week}", NFLVERSE_URL))
     return facts
+
+
+def team_facts(ctx: PlayerContext, q: Question) -> list[Fact]:
+    """The team's situation, when this week's news or reports change it: key teammates who can't
+    play, and teammates' role changes (e.g. a new starting quarterback)."""
+    facts = []
+    if ctx.teammates_out:
+        each = "; ".join(f"{t.name} ({t.role}) {t.status}" for t in ctx.teammates_out)
+        both = sum(t.top_qb for t in ctx.teammates_out) == KEY_QBS
+        note = " Neither of the team's top two quarterbacks this season is available." if both else ""
+        source = next((t.source_url for t in ctx.teammates_out if t.source_url), None)
+        facts.append(Fact("team", f"{ctx.team} key teammates unavailable: {each}.{note}", source))
+    for n in ctx.teammate_news:
+        date = n["published_at"][:10]
+        text = f"{ctx.team} teammate news, {date} {n['source']}: {n['summary']} ({n['name']}: {n['role']})"
+        facts.append(Fact("team", text, n["url"]))
+    return facts
+
+
+def _ordinal(n: int) -> str:
+    suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
+def _fewest(rank: int) -> str:
+    return "the fewest" if rank == 1 else f"the {_ordinal(rank)} fewest"
+
+
+def defense_facts(ctx: PlayerContext, q: Question) -> list[Fact]:
+    d = ctx.defense
+    if d is None:
+        return []
+    position = ctx.player["position"]
+    return [
+        Fact(
+            "defense",
+            f"{d.defense} defense vs {position}s this season: {d.per_game:.1f} {q.label} pts allowed per game to "
+            f"{position}s over {_plural(d.games, 'game')}, {_fewest(d.rank)} of {d.teams} teams "
+            "(the fewest = the toughest matchup)",
+            NFLVERSE_URL,
+        )
+    ]
 
 
 def consensus_facts(ctx: PlayerContext, q: Question) -> list[Fact]:
@@ -508,8 +680,10 @@ def crowd_facts(ctx: PlayerContext, q: Question) -> list[Fact]:
 # Order here is the order facts appear in the packet. Add new signals here.
 ITEM_BUILDERS: tuple[Callable[[PlayerContext, Question], list[Fact]], ...] = (
     availability_facts,
+    team_facts,
     consensus_facts,
     matchup_facts,
+    defense_facts,
     usage_facts,
     injury_facts,
     news_facts,

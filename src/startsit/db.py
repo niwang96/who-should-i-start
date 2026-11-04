@@ -627,6 +627,42 @@ class Database:
             ),
         )
 
+    def team_usage(self, season: int, team: str, before_week: int) -> list[dict[str, Any]]:
+        """The team's players by their usage for it this season before `before_week`: player_id, name,
+        position, snaps, targets, carries (most snaps first)."""
+        return self.query(
+            "SELECT pw.player_id, p.name, p.position, SUM(COALESCE(pw.offense_snaps, 0)) AS snaps, "
+            "SUM(COALESCE(pw.targets, 0)) AS targets, SUM(COALESCE(pw.carries, 0)) AS carries "
+            "FROM player_weeks pw JOIN players p ON p.player_id = pw.player_id "
+            "WHERE pw.season = ? AND pw.week < ? AND pw.team = ? "
+            "GROUP BY pw.player_id, p.name, p.position ORDER BY snaps DESC, p.name",
+            (season, before_week, team),
+        )
+
+    def team_role_news(self, team: str, since: str, until: str) -> list[dict[str, Any]]:
+        """Role-change news facts in [since, until] about the team's players (e.g. a new starting
+        quarterback, a back taking over the carries), newest first, with the player's name and position."""
+        return self.query(
+            "SELECT f.*, p.name, p.position FROM news_facts f JOIN players p ON p.player_id = f.player_id "
+            "WHERE p.team = ? AND f.event = 'role_change' "
+            "AND f.published_at >= ? AND f.published_at <= ? ORDER BY f.published_at DESC",
+            (team, since, until),
+        )
+
+    def points_allowed(self, season: int, before_week: int, position: str, points_column: str) -> list[dict[str, Any]]:
+        """Fantasy points each defense allowed to `position` before `before_week`: defense, games, points.
+
+        `points_column` is a fantasy points column of player_weeks, named by code (scoring.column).
+        """
+        return self.query(
+            "SELECT defense, COUNT(*) AS games, SUM(points) AS points FROM ("
+            f"SELECT pw.opponent AS defense, pw.week, SUM(COALESCE(pw.{points_column}, 0)) AS points "
+            "FROM player_weeks pw JOIN players p ON p.player_id = pw.player_id "
+            "WHERE pw.season = ? AND pw.week < ? AND p.position = ? AND pw.opponent IS NOT NULL "
+            "GROUP BY pw.opponent, pw.week) per_game GROUP BY defense",
+            (season, before_week, position),
+        )
+
     # --- players ---------------------------------------------------------------
 
     def all_players(self) -> list[PlayerRow]:

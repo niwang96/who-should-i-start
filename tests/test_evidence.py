@@ -456,3 +456,129 @@ def test_crowd_votes_from_this_weeks_threads_become_one_item_and_a_crowd_pick(se
     seeded.upsert("crowd_votes", [vote("c8", "SMITH", "start", "2026-10-22T14:00:00+00:00")])
     assert build_packet(seeded, ["NACUA", "SMITH"], "ppr", 2026, 7, as_of=as_of).crowd_pick is None  # 3 vs 2
     assert build_packet(seeded, ["HALL", "GENO"], "ppr", 2026, 7, as_of=as_of).crowd_pick is None  # no votes
+
+
+def qb_week(player_id, week, team, snaps, opponent="MIA", fp=10.0):
+    from test_cli import _week
+
+    return _week(player_id, week) | dict(team=team, opponent=opponent, offense_snaps=snaps, fp_ppr=fp)
+
+
+@pytest.fixture
+def jets(seeded):
+    """NYJ (Breece Hall's team): Geno Smith started, Backup Bob filled in, Third Tom hasn't played."""
+    seeded.upsert(
+        "players",
+        [player("BOB", "Backup Bob", "QB", "NYJ"), player("TOM", "Third Tom", "QB", "NYJ")],
+    )
+    seeded.upsert(
+        "player_weeks",
+        [qb_week("GENO", w, "NYJ", 60) for w in (4, 5, 6)]
+        + [qb_week("BOB", 6, "NYJ", 5), qb_week("TOM", 6, "NYJ", 0), qb_week("GENO", 7, "NYJ", 60)],
+    )
+    return seeded
+
+
+AS_OF = datetime(2026, 10, 23, 12, tzinfo=UTC)
+
+
+def team_texts(packet, i=0):
+    return [it.text for it in packet.players[i].items_of("team")]
+
+
+def test_the_teams_quarterback_situation_reaches_its_other_players(jets):
+    jets.upsert(
+        "news_facts",
+        [
+            news_fact("GENO", "2026-10-22T15:00:00+00:00", "Ruled out.", 31, game_status="out"),
+            news_fact("TOM", "2026-10-22T18:00:00+00:00", "Named the starter.", 32, event="role_change"),
+            news_fact("TOM", "2026-10-21T18:00:00+00:00", "Older news.", 33, event="role_change"),
+        ],
+    )
+    jets.upsert("injuries", [injury("BOB", "Doubtful", "Did Not Participate In Practice", "Toe")])
+    p = build_packet(jets, ["HALL", "SMITH"], "ppr", 2026, 7, as_of=AS_OF)
+    assert team_texts(p) == [
+        "NYJ key teammates unavailable: Geno Smith (QB, 180 snaps for NYJ this season) out (RotoWire, "
+        "2026-10-22); Backup Bob (QB, 5 snaps for NYJ this season) doubtful (week 7 injury report). "
+        "Neither of the team's top two quarterbacks this season is available.",
+        "NYJ teammate news, 2026-10-22 RotoWire: Named the starter. (Third Tom: QB, 0 snaps for NYJ this season)",
+    ]
+    assert p.players[0].items_of("team")[0].source_url == "https://example.com/news/31"
+    assert team_texts(p, 1) == []  # PHI's quarterbacks are fine
+    # A quarterback isn't his own teammate: Geno's packet keeps only the others.
+    geno = build_packet(jets, ["GENO", "SMITH"], "ppr", 2026, 7, as_of=AS_OF)
+    assert team_texts(geno)[0].startswith("NYJ key teammates unavailable: Backup Bob (QB, 5 snaps")
+
+
+@pytest.mark.parametrize(
+    "news_status,roster_status,expected",
+    [
+        ("active", "RES", None),  # this week's news beats a stale roster (and injury report)
+        (None, "RES", "on a reserve list (IR/PUP/NFI) (roster)"),
+        ("questionable", None, None),  # questionable isn't out
+    ],
+)
+def test_which_report_says_a_quarterback_is_out(jets, news_status, roster_status, expected):
+    if news_status:
+        jets.upsert(
+            "news_facts", [news_fact("GENO", "2026-10-22T15:00:00+00:00", "Update.", 34, game_status=news_status)]
+        )
+    if roster_status:
+        jets.upsert("roster_weeks", [roster("GENO", 7, "NYJ", roster_status)])
+    texts = team_texts(build_packet(jets, ["HALL", "SMITH"], "ppr", 2026, 7, as_of=AS_OF))
+    if expected is None:
+        assert texts == []
+    else:
+        assert texts[0].startswith(
+            f"NYJ key teammates unavailable: Geno Smith (QB, 180 snaps for NYJ this season) {expected}"
+        )
+
+
+def test_the_opponents_defense_is_ranked_by_points_allowed_to_the_position(jets):
+    jets.upsert(
+        "player_weeks",
+        [
+            qb_week("HALL", 5, "NYJ", 40, opponent="DAL", fp=30.0),  # RBs vs DAL: 30 a game
+            qb_week("JACOBS", 5, "GB", 40, opponent="MIA", fp=8.0),  # RBs vs MIA: 8, then 12
+            qb_week("JACOBS", 6, "GB", 40, opponent="MIA", fp=12.0),
+            qb_week("CUT", 6, "NYG", 40, opponent="DAL", fp=None),  # no points recorded counts as 0
+        ],
+    )
+    p = build_packet(jets, ["HALL", "NACUA"], "ppr", 2026, 7, as_of=AS_OF)
+    assert [i.text for i in p.players[0].items_of("defense")] == [
+        "MIA defense vs RBs this season: 10.0 PPR pts allowed per game to RBs over 2 games, the fewest of 2 "
+        "teams (the fewest = the toughest matchup)"
+    ]
+    # NACUA (LA) plays LV, which no receiver has faced in this data: no defense item.
+    assert p.players[1].items_of("defense") == []
+
+
+def test_key_teammates_at_every_position_and_their_role_news(jets):
+    jets.upsert(
+        "players",
+        [
+            player("GW", "Garrett Wilson", "WR", "NYJ"),
+            player("SAM", "Slot Sam", "WR", "NYJ"),
+            player("BA", "Braelon Allen", "RB", "NYJ"),
+        ],
+    )
+    jets.upsert(
+        "player_weeks",
+        [qb_week("GW", w, "NYJ", 55) | dict(targets=10, carries=0) for w in (4, 5, 6)]
+        + [qb_week("SAM", w, "NYJ", 20) | dict(targets=1, carries=0) for w in (4, 5, 6)],
+    )
+    jets.upsert(
+        "injuries",
+        [injury("GW", "Out", "Did Not Participate In Practice", "Ankle"), injury("SAM", "Out", "DNP", "Knee")],
+    )
+    jets.upsert(
+        "news_facts", [news_fact("BA", "2026-10-22T18:00:00+00:00", "Takes over early downs.", 35, event="role_change")]
+    )
+    texts = team_texts(build_packet(jets, ["HALL", "SMITH"], "ppr", 2026, 7, as_of=AS_OF))
+    # Slot Sam (a small share of the targets) isn't a key teammate; Allen hasn't played yet.
+    assert texts == [
+        "NYJ key teammates unavailable: Garrett Wilson (WR, 62% of NYJ's targets this season) out "
+        "(week 7 injury report).",
+        "NYJ teammate news, 2026-10-22 RotoWire: Takes over early downs. "
+        "(Braelon Allen: RB, hasn't played for NYJ this season)",
+    ]

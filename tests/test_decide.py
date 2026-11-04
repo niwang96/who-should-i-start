@@ -309,7 +309,7 @@ def test_going_against_the_baseline_needs_a_definite_fact(cited, accepted):
     if not accepted:
         assert problems == [
             "the pick goes against the baseline without citing a definite fact (an availability, injury "
-            "report or news item) in baseline_disagreement; pick the baseline pick unless one applies"
+            "report, news or team item) in baseline_disagreement; pick the baseline pick unless one applies"
         ]
 
 

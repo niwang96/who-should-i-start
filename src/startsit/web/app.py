@@ -79,9 +79,11 @@ RECORD_GROUPS = [
 SOURCE_LABELS = {"llm": "AI pick", "cache": "AI pick", "baseline": "Expert-consensus pick"}
 KIND_LABELS = {
     "availability": "Availability",
+    "team": "Team news",
     "consensus": "Expert consensus",
     "projection": "Projection",
     "matchup": "Matchup",
+    "defense": "Opponent defense",
     "usage": "Usage",
     "injury": "Injury report",
     "news": "News",
