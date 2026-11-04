@@ -42,6 +42,10 @@ class PlayerRow(TypedDict):
     pfr_id: str | None
 
 
+# Roster statuses that apply to one game only, so they don't carry over to the next week.
+GAME_DAY_STATUSES = {"INA"}
+
+
 class RosterRow(TypedDict):
     player_id: str
     season: int
@@ -728,8 +732,16 @@ class Database:
         )
 
     def roster_status(self, player_id: str, season: int, week: int) -> RosterRow | None:
-        """The player's roster entry for `week`, else the latest one before it."""
-        return cast("RosterRow | None", self._player_row("roster_weeks", player_id, season, "week <= ?", week, "week"))
+        """The player's roster entry for `week`, else the latest one before it.
+
+        nflverse publishes a week's rosters during that week, so early in the week the latest entry is
+        last week's. A lasting status (reserve list, practice squad, released) carries over, but
+        "inactive" (INA) was for that one game, so a carried-over INA becomes unknown (None).
+        """
+        row = cast("RosterRow | None", self._player_row("roster_weeks", player_id, season, "week <= ?", week, "week"))
+        if row is not None and row["week"] < week and row["status"] in GAME_DAY_STATUSES:
+            return {**row, "status": None}
+        return row
 
     def injury(self, player_id: str, season: int, week: int) -> InjuryRow | None:
         return cast("InjuryRow | None", self._player_row("injuries", player_id, season, "week = ?", week))
