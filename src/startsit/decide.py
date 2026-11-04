@@ -50,7 +50,7 @@ VISITOR_LIMITS = (
     VisitorLimit(6, timedelta(minutes=10), "10 minutes"),
     VisitorLimit(25, timedelta(days=1), "day"),
 )
-PROMPT_VERSION = 8  # bump when the prompt or schema changes, so cached answers aren't reused
+PROMPT_VERSION = 9  # bump when the prompt or schema changes, so cached answers aren't reused
 MAX_ATTEMPTS = 2
 # Baseline confidence from the projection gap (points): at least HIGH_MARGIN is high, MEDIUM_MARGIN medium.
 HIGH_MARGIN = 5.0
@@ -93,8 +93,10 @@ Rules:
   starting quarterback, the lead back, a top target) and role changes (a backup named the starter).
   That is a definite fact the projection may not have caught up with, and it can justify going
   against the baseline for that team's players.
-- defense facts rank the opponent by fantasy points allowed to the position. Like the betting
-  lines, they're matchup context already priced into the consensus.
+- defense facts rank the opponent by fantasy points allowed to the position, and list the
+  opponent's key defenders who can't play this week (pass rushers, corners, linebackers). Like the
+  betting lines, they're matchup context: mention them, but they never justify going against the
+  baseline.
 - crowd facts count start/sit votes from Reddit fans this week. They're opinion, not definite
   facts: mention them if they help, but they never decide the pick, and a reason a fan gives
   counts only as that fan's claim.

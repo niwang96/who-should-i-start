@@ -48,9 +48,11 @@ DAILY_REFRESH_AFTER = time(10, 0)
 
 def run(db: Database, raw: nflverse.RawNflverse, season: int) -> dict[str, int]:
     weeks = nflverse.build_player_weeks(raw).filter(pl.col("season") == season)
-    roster_weeks = nflverse.build_roster_weeks(raw).filter(pl.col("season") == season)
+    defender_weeks = nflverse.build_defender_weeks(raw).filter(pl.col("season") == season)
+    defenders = nflverse.build_defenders(raw, defender_weeks)
+    roster_weeks = nflverse.build_roster_weeks(raw, defenders["player_id"]).filter(pl.col("season") == season)
     players = nflverse.build_players(raw, weeks)
-    injuries = nflverse.build_injuries(raw).filter(pl.col("season") == season)
+    injuries = nflverse.build_injuries(raw, defenders["player_id"]).filter(pl.col("season") == season)
     features = compute_usage_features(weeks)
     games = nflverse.build_games(raw).filter(pl.col("season") == season)
     max_week = int(weeks.select(pl.max("week")).item()) if not weeks.is_empty() else None
@@ -60,6 +62,8 @@ def run(db: Database, raw: nflverse.RawNflverse, season: int) -> dict[str, int]:
         "roster_weeks": db.upsert("roster_weeks", roster_weeks.to_dicts()),
         "player_weeks": db.upsert("player_weeks", weeks.to_dicts()),
         "injuries": db.upsert("injuries", injuries.to_dicts()),
+        "defenders": db.upsert("defenders", defenders.to_dicts()),
+        "defender_weeks": db.upsert("defender_weeks", defender_weeks.to_dicts()),
         "usage_features": db.upsert("usage_features", features.to_dicts()),
         "games": db.upsert("games", games.to_dicts()),
     }

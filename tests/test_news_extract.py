@@ -98,6 +98,24 @@ def test_hedged_wording_is_dropped_only_for_role_speculation():
     assert [(f["player_id"], f["game_status"]) for f in facts] == [("WALKER", "questionable")]
 
 
+def test_defenders_are_matched_only_with_a_game_status_and_after_skill_players():
+    defenders = PlayerMatcher(
+        [player("HINES", "Josh Hines-Allen", "JAX", "DE"), player("NACUA_D", "Puka Nacua", "LA", "CB")]
+    )
+    response = {
+        "facts": [
+            fact("N1", name="Josh Hines-Allen", team="JAX", summary="Ruled out.", status="out"),
+            fact("N2", name="Josh Hines-Allen", team="JAX", event="practice", summary="Limited."),  # no status
+            fact("N3", status="out", summary="Ruled out."),  # Puka Nacua: our receiver, not the namesake
+        ]
+    }
+    facts = facts_from_response(response, [item(1), item(2), item(3)], PlayerMatcher(PLAYERS), defenders)
+    assert [(f["item_id"], f["player_id"], f["game_status"]) for f in facts] == [
+        ("RotoWire:1", "HINES", "out"),
+        ("RotoWire:3", "NACUA", "out"),
+    ]
+
+
 def test_build_prompt_numbers_items():
     assert build_prompt([item(1), item(2, summary=None)]) == (
         "News items:\n[N1] Headline 1 | Details.\n[N2] Headline 2"

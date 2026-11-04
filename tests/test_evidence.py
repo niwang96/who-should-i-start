@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from startsit import decide
 from startsit.evidence import (
     PlayerLookupError,
     build_packet,
@@ -582,3 +583,58 @@ def test_key_teammates_at_every_position_and_their_role_news(jets):
         "NYJ teammate news, 2026-10-22 RotoWire: Takes over early downs. "
         "(Braelon Allen: RB, hasn't played for NYJ this season)",
     ]
+
+
+def defender(player_id, name, position, week, pct, **stats):
+    row = dict(
+        player_id=player_id,
+        season=2026,
+        week=week,
+        team="MIA",
+        defense_snaps=int(pct * 60),
+        defense_pct=pct,
+        sacks=0.0,
+        qb_hits=0,
+        interceptions=0,
+        pass_defended=0,
+        tackles_for_loss=0,
+    )
+    return (dict(player_id=player_id, name=name, position=position, team="MIA"), row | stats)
+
+
+def test_the_opponents_key_defenders_who_cant_play(jets):
+    """NYJ plays MIA in week 7. Each position sees the defenders it faces: backs the pass rushers and
+    the linebacker, receivers the corners. Defenders who aren't key are left out even when out."""
+    rows = [
+        defender("R1", "Big Rusher", "DE", 5, 0.8, sacks=2.0, qb_hits=3),
+        defender("R1", "Big Rusher", "DE", 6, 0.8, sacks=2.0, qb_hits=3),
+        defender("R2", "Small Rusher", "DT", 6, 0.7, sacks=1.0, qb_hits=2),  # 3 pressures: not key
+        defender("C1", "Top Corner", "CB", 6, 0.95, interceptions=2, pass_defended=8),
+        defender("L1", "Mike Backer", "LB", 6, 0.98, tackles_for_loss=3),
+        defender("L2", "Backup Backer", "LB", 6, 0.3),  # not a starter
+        defender("S1", "Safety Sam", "SAF", 6, 1.0, sacks=4.0, qb_hits=4),  # coverage, never a rusher
+    ]
+    jets.upsert("defenders", list({d["player_id"]: d for d, _ in rows}.values()))
+    jets.upsert("defender_weeks", [w for _, w in rows])
+    jets.upsert("players", [player("GW", "Garrett Wilson", "WR", "NYJ")])
+    jets.upsert(
+        "injuries",
+        [
+            injury(pid, status, "DNP", "Knee")
+            for pid, status in [("R1", "Out"), ("R2", "Out"), ("L1", "Doubtful"), ("L2", "Out"), ("S1", "Out")]
+        ],
+    )
+    jets.upsert("news_facts", [news_fact("C1", "2026-10-22T15:00:00+00:00", "Ruled out.", 36, game_status="out")])
+    hall, wilson = build_packet(jets, ["HALL", "GW"], "ppr", 2026, 7, as_of=AS_OF).players
+    assert hall.items_of("defense")[-1].text == (
+        "MIA key defenders unavailable: Big Rusher (DE, 4 sacks and 6 QB hits this season) out (week 7 injury "
+        "report); Mike Backer (LB, 3 tackles for loss this season, on the field for 98% of snaps) doubtful "
+        "(week 7 injury report)."
+    )
+    [item] = wilson.items_of("defense")  # no receiver has faced MIA here, so no ranking either
+    assert item.text == (
+        "MIA key defenders unavailable: Top Corner (CB, 2 INTs and 8 passes defended this season, on the "
+        "field for 95% of snaps) out (RotoWire, 2026-10-22)."
+    )
+    assert item.source_url == "https://example.com/news/36"
+    assert "defense" not in decide.OVERRIDE_KINDS  # matchup context, never a reason to go against the experts

@@ -21,9 +21,9 @@ from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
-from startsit.db import Database, NewsExtractionRow, NewsFactRow, NewsItemRow, utc_iso
+from startsit.db import Database, NewsExtractionRow, NewsFactRow, NewsItemRow, PlayerRow, utc_iso
 from startsit.llm import BudgetedLLM, LLMError
 from startsit.names import PlayerMatcher
 
@@ -42,10 +42,12 @@ Rules:
 - Use only the text of each item. Never add outside knowledge.
 - Only include QB, RB, WR or TE players named in the item, and only when the item reports a fact
   about their availability, health, role or a game already played. An item may produce no facts.
+- Also include defensive players (DE, DT, LB, CB, S), but only when the item states their status
+  for their next game (see game_status).
 - Skip: opinions, quotes, predictions, betting or fantasy picks ("smash spot", "TD scorer picks",
   "expected to bounce back"), speculation about a future role ("may soon start", "could see more
   snaps", "might take over"), game previews and matchup hype, off-field news with no effect on
-  playing, and team-level news, coaches, defenders and kickers.
+  playing, and team-level news, coaches and kickers.
 - One fact per player per item. Use the player's full name as written and their team abbreviation
   if the item gives it (else an empty string).
 - event: injury (hurt, status questionable/doubtful/out), practice (practice participation),
@@ -113,8 +115,14 @@ def is_noise(event: str, severity: str, summary: str, game_status: str | None) -
     return event in ("role_change", "other") and game_status is None and bool(_SPECULATIVE.search(summary))
 
 
-def facts_from_response(response: Any, items: Sequence[NewsItemRow], matcher: PlayerMatcher) -> list[NewsFactRow]:
-    """Validate the LLM output against the chunk and attach code-owned fields (URL, date, player id)."""
+def facts_from_response(
+    response: Any, items: Sequence[NewsItemRow], matcher: PlayerMatcher, defenders: PlayerMatcher | None = None
+) -> list[NewsFactRow]:
+    """Validate the LLM output against the chunk and attach code-owned fields (URL, date, player id).
+
+    Names are matched to our QBs, RBs, WRs and TEs first, then to `defenders`. A defender's fact
+    is kept only with a game status: that's all the evidence uses (an opponent's key defender out).
+    """
     by_id = {f"N{i}": item for i, item in enumerate(items, 1)}
     facts: dict[tuple[str, str], NewsFactRow] = {}  # by (item_id, player_id)
     raw_facts = response.get("facts") if isinstance(response, dict) else None
@@ -130,7 +138,10 @@ def facts_from_response(response: Any, items: Sequence[NewsItemRow], matcher: Pl
             continue
         if is_noise(event, severity, summary, game_status):
             continue
-        player_id = matcher.match(str(raw.get("player", "")), str(raw.get("team", "")))
+        name, team = str(raw.get("player", "")), str(raw.get("team", ""))
+        player_id = matcher.match(name, team)
+        if player_id is None and defenders is not None and game_status is not None:
+            player_id = defenders.match(name, team)
         if player_id is None:
             log.info("news fact for unmatched player %r (%s) skipped", raw.get("player"), item["item_id"])
             continue
@@ -153,6 +164,8 @@ def extract_news(db: Database, llm: BudgetedLLM, now: datetime | None = None) ->
     now = now or datetime.now(UTC)
     pending = db.unextracted_news(utc_iso(now - LOOKBACK), MAX_ITEMS_PER_RUN)
     matcher = PlayerMatcher(db.all_players())
+    # Defender rows have the fields the matcher reads (player_id, name, team).
+    defenders = PlayerMatcher(cast("list[PlayerRow]", db.all_defenders()))
     processed = fact_count = calls = 0
     stopped: str | None = None
     for start in range(0, len(pending), CHUNK_SIZE):
@@ -166,7 +179,7 @@ def extract_news(db: Database, llm: BudgetedLLM, now: datetime | None = None) ->
         except LLMError as e:
             stopped = str(e)  # leave this chunk unextracted; the next run retries it
             break
-        facts = facts_from_response(response, chunk, matcher)
+        facts = facts_from_response(response, chunk, matcher, defenders)
         per_item: dict[str, int] = defaultdict(int)
         for f in facts:
             per_item[f["item_id"]] += 1

@@ -218,6 +218,13 @@ Many users will ask about the same players, so cache per-player results.
    - `defense` items (`evidence.defense_facts`): the opponent's fantasy points allowed per game to the player's position this season (question's scoring, weeks before the one asked), ranked among all defenses (`Database.points_allowed`). Matchup context like the betting lines, so not an override reason.
    - Prompt `PROMPT_VERSION` 8 explains both. The web evidence grid labels them "Team news" and "Opponent defense".
    - Live check (week 9, Tuesday news): Henry's packet got "BAL teammate news: The Ravens named Joe Fagnano the starter (Joe Fagnano: QB, 0 snaps for BAL this season)" and "JAX defense vs RBs: 16.8 PPR pts allowed per game, the fewest of 32 teams". The AI cited both and still picked Henry in PPR (expert edge 1.6 pts), half-PPR (3.4) and standard (5.2).
+11. **Opponent's key defenders** (Nov 4 2026, asked for after step 10):
+   - **Data** (daily stats refresh, `nflverse.build_defender_weeks`/`build_defenders`): `defender_weeks` holds each defender's defensive snaps and share per game (snap counts, PFR ids mapped to GSIS ids) and sacks, QB hits, INTs, passes defended and tackles for loss (player stats). `defenders` (name, position, team) is kept apart from `players`, so defenders never show up in the player suggestions. Injury reports and weekly roster status now also cover these defenders (~2x the rows). Real data, week 9: 916 defenders, 5,148 defender-weeks.
+   - **Key defenders** (`evidence.DefenseUsage.key_players`, from `Database.team_defenders`, weeks before the one asked): the top 2 pass rushers by sacks + QB hits (at least 5; never a DB/safety), the top 2 corners and the top linebacker by snaps among those on the field for at least 60% of the snaps in their games.
+   - **Who sees what** (`DEFENDER_ROLES`): QBs see rushers and corners, RBs rushers and the linebacker, WRs corners, TEs corners and the linebacker.
+   - **Evidence:** a second `defense` item when any of them can't play this week (same `evidence.unavailable` rule as teammates), e.g. "CAR key defenders unavailable: Jaelan Phillips (LB, 2.5 sacks and 6 QB hits this season) out (week 8 injury report)". Matchup context, so `defense` stays out of `OVERRIDE_KINDS`; prompt `PROMPT_VERSION` 9 says so.
+   - **News:** extraction also keeps defenders, but only facts with a game status (`news_extract.facts_from_response`). Names match our QBs/RBs/WRs/TEs first, then defenders, so a defender sharing a skill player's name never takes his news.
+   - Real-data check (week 8 as of Sunday morning): 9 of 120 players got a key-defender item, e.g. Jordan Love vs CAR without Jaelan Phillips and Akayleb Evans.
 
 ## Open to-dos
 - [x] Request FantasyPros API key (approved; key received)

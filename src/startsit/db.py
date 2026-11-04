@@ -72,6 +72,30 @@ class PlayerWeekRow(TypedDict):
     xfp_std: float | None
 
 
+class DefenderRow(TypedDict):
+    """A defensive player on the field for his team this season (kept apart from `players`, which
+    holds only the QBs, RBs, WRs and TEs users can ask about)."""
+
+    player_id: str  # nflverse GSIS id
+    name: str
+    position: str  # nflverse's, e.g. DE, DT, LB, OLB, CB, SAF
+    team: str | None  # team of his latest game
+
+
+class DefenderWeekRow(TypedDict):
+    player_id: str
+    season: int
+    week: int
+    team: str | None
+    defense_snaps: int
+    defense_pct: float  # share of the team's defensive snaps in that game
+    sacks: float
+    qb_hits: int
+    interceptions: int
+    pass_defended: int
+    tackles_for_loss: int
+
+
 class InjuryRow(TypedDict):
     """Overwritten as reports update; recommendations must store the packet they used."""
 
@@ -342,6 +366,8 @@ TABLES: dict[str, Table] = {
         Table("roster_weeks", RosterRow, ("player_id", "season", "week")),
         Table("player_weeks", PlayerWeekRow, ("player_id", "season", "week")),
         Table("injuries", InjuryRow, ("player_id", "season", "week")),
+        Table("defenders", DefenderRow, ("player_id",)),
+        Table("defender_weeks", DefenderWeekRow, ("player_id", "season", "week")),
         Table("usage_features", UsageRow, ("player_id", "season", "through_week")),
         Table("games", GameRow, ("game_id",)),
         Table("rankings", RankingRow, ("season", "week", "scrape_date", "fantasypros_id")),
@@ -649,6 +675,23 @@ class Database:
             (team, since, until),
         )
 
+    def team_defenders(self, season: int, team: str, before_week: int) -> list[dict[str, Any]]:
+        """The team's defenders this season before `before_week`, with season totals: player_id, name,
+        position, games, snaps, pct (average share of the defensive snaps in the games he played on
+        defense), sacks, qb_hits,
+        interceptions, pass_defended, tackles_for_loss. Most snaps first."""
+        return self.query(
+            "SELECT w.player_id, d.name, d.position, COUNT(*) AS games, SUM(w.defense_snaps) AS snaps, "
+            "AVG(CASE WHEN w.defense_snaps > 0 THEN w.defense_pct END) AS pct, "
+            "SUM(w.sacks) AS sacks, SUM(w.qb_hits) AS qb_hits, "
+            "SUM(w.interceptions) AS interceptions, SUM(w.pass_defended) AS pass_defended, "
+            "SUM(w.tackles_for_loss) AS tackles_for_loss "
+            "FROM defender_weeks w JOIN defenders d ON d.player_id = w.player_id "
+            "WHERE w.season = ? AND w.week < ? AND w.team = ? "
+            "GROUP BY w.player_id, d.name, d.position ORDER BY snaps DESC, d.name",
+            (season, before_week, team),
+        )
+
     def points_allowed(self, season: int, before_week: int, position: str, points_column: str) -> list[dict[str, Any]]:
         """Fantasy points each defense allowed to `position` before `before_week`: defense, games, points.
 
@@ -667,6 +710,9 @@ class Database:
 
     def all_players(self) -> list[PlayerRow]:
         return cast("list[PlayerRow]", self.query("SELECT * FROM players"))
+
+    def all_defenders(self) -> list[DefenderRow]:
+        return cast("list[DefenderRow]", self.query("SELECT * FROM defenders"))
 
     def player(self, player_id: str) -> PlayerRow | None:
         return cast("PlayerRow | None", self._one("SELECT * FROM players WHERE player_id = ?", (player_id,)))
