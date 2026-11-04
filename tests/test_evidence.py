@@ -222,6 +222,17 @@ def test_only_active_roster_players_can_score(seeded):
     assert "favors DeVonta Smith by 15.1 pts" in p.to_text()
 
 
+def test_a_game_day_inactive_from_an_earlier_week_doesnt_carry_over(seeded):
+    """Early in the week nflverse has no roster for it yet; last week's INA was for that game only."""
+    seeded.upsert("roster_weeks", [roster("SMITH", 6, "PHI", "INA"), roster("NACUA", 6, "LA", "RES")])
+    p = build_packet(seeded, ["SMITH", "NACUA"], "ppr", 2026, 7)
+    smith, nacua = p.players
+    assert smith.score.points == 15.1 and not any("Roster status" in t for t in texts(p, 0))
+    assert nacua.score.points == 0.0  # a reserve list does carry over
+    seeded.upsert("roster_weeks", [roster("SMITH", 7, "PHI", "INA")])  # this week's own INA counts
+    assert build_packet(seeded, ["SMITH", "NACUA"], "ppr", 2026, 7).players[0].score.points == 0.0
+
+
 def test_packet_rejects_bad_input(seeded):
     with pytest.raises(ValueError):
         build_packet(seeded, ["SMITH", "SMITH"], "ppr", 2026, 7)
