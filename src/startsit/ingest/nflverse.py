@@ -14,6 +14,16 @@ from startsit.db import TABLES
 from startsit.scoring import SCORINGS, column, from_ppr
 
 SKILL_POSITIONS = ["QB", "RB", "WR", "TE"]
+# nflverse's defensive positions (player stats and snap counts label them differently).
+DEFENSE_POSITIONS = ["DE", "DT", "NT", "DL", "EDGE", "LB", "ILB", "MLB", "OLB", "CB", "DB", "S", "SAF", "FS", "SS"]
+# Season stats kept per defender: player_stats column -> defender_weeks column.
+DEFENSE_STATS = {
+    "def_sacks": "sacks",
+    "def_qb_hits": "qb_hits",
+    "def_interceptions": "interceptions",
+    "def_pass_defended": "pass_defended",
+    "def_tackles_for_loss": "tackles_for_loss",
+}
 PLAYER_WEEK = ["player_id", "season", "week"]
 
 COUNT_COLS = ["targets", "carries", "receptions"]
@@ -120,10 +130,75 @@ def build_player_weeks(raw: RawNflverse) -> pl.DataFrame:
     return weeks.select(TABLES["player_weeks"].columns).sort(PLAYER_WEEK)
 
 
-def build_roster_weeks(raw: RawNflverse) -> pl.DataFrame:
-    """Each player's team and roster status per week (ACT, RES, DEV, CUT, RET, ...)."""
+def _skill_or(frame: pl.DataFrame, defender_ids: pl.Series | None) -> pl.DataFrame:
+    """Regular-season rows (with a GSIS id) for QB/RB/WR/TE and, if given, these defenders."""
+    keep = pl.col("position").is_in(SKILL_POSITIONS)
+    if defender_ids is not None:
+        keep |= pl.col("gsis_id").is_in(defender_ids.implode())
+    return frame.filter((pl.col("game_type") == "REG") & pl.col("gsis_id").is_not_null() & keep)
+
+
+def build_defender_weeks(raw: RawNflverse) -> pl.DataFrame:
+    """One row per (defender, season, week) he was on the field: defensive snaps and playmaking stats.
+
+    Snap counts (by PFR id, mapped to GSIS ids via the players table) say who starts; player stats
+    say who makes plays. A defender with stats but no mapped snap count gets 0 snaps.
+    """
+    id_map = raw.players.select("gsis_id", "pfr_id").drop_nulls().unique("pfr_id")
+    snaps = (
+        raw.snap_counts.filter((pl.col("game_type") == "REG") & pl.col("position").is_in(DEFENSE_POSITIONS))
+        .join(id_map, left_on="pfr_player_id", right_on="pfr_id", how="inner")
+        .select(
+            pl.col("gsis_id").alias("player_id"),
+            *_season_week(),
+            pl.col("team").alias("snap_team"),
+            pl.col("defense_snaps").cast(pl.Int64),
+            pl.col("defense_pct").cast(pl.Float64),
+        )
+        .filter(pl.col("defense_snaps") > 0)
+    )
+    stats = raw.player_stats.filter(
+        (pl.col("season_type") == "REG")
+        & pl.col("position").is_in(DEFENSE_POSITIONS)
+        & pl.col("player_id").is_not_null()
+    ).select("player_id", *_season_week(), "team", *[pl.col(c).alias(n) for c, n in DEFENSE_STATS.items()])
     return (
-        _regular_season_skill(raw.rosters)
+        snaps.join(stats, on=PLAYER_WEEK, how="full", coalesce=True)
+        .with_columns(
+            pl.coalesce("snap_team", "team").alias("team"),
+            pl.col("defense_snaps").fill_null(0),
+            pl.col("defense_pct").fill_null(0.0),
+            pl.col("sacks").cast(pl.Float64).fill_null(0.0),
+            *[pl.col(c).cast(pl.Int64).fill_null(0) for c in list(DEFENSE_STATS.values())[1:]],
+        )
+        .select(TABLES["defender_weeks"].columns)
+        .sort(PLAYER_WEEK)
+    )
+
+
+def build_defenders(raw: RawNflverse, defender_weeks: pl.DataFrame) -> pl.DataFrame:
+    """The defenders in `defender_weeks`: name and position from the players table, team of the latest game."""
+    latest = (
+        defender_weeks.sort("season", "week")
+        .group_by("player_id")
+        .agg(pl.col("team").drop_nulls().last().alias("team"))
+    )
+    master = raw.players.select(
+        pl.col("gsis_id").alias("player_id"), pl.col("display_name").alias("name"), "position"
+    ).unique("player_id")
+    return (
+        latest.join(master, on="player_id", how="inner")
+        .filter(pl.col("name").is_not_null() & pl.col("position").is_not_null())
+        .select(TABLES["defenders"].columns)
+        .sort("player_id")
+    )
+
+
+def build_roster_weeks(raw: RawNflverse, defender_ids: pl.Series | None = None) -> pl.DataFrame:
+    """Each player's team and roster status per week (ACT, RES, DEV, CUT, RET, ...), for skill players
+    and the given defenders."""
+    return (
+        _skill_or(raw.rosters, defender_ids)
         .select(
             pl.col("gsis_id").alias("player_id"),
             *_season_week(),
@@ -178,9 +253,10 @@ def build_players(raw: RawNflverse, player_weeks: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def build_injuries(raw: RawNflverse) -> pl.DataFrame:
+def build_injuries(raw: RawNflverse, defender_ids: pl.Series | None = None) -> pl.DataFrame:
+    """Weekly injury reports for skill players and the given defenders."""
     return (
-        _regular_season_skill(raw.injuries)
+        _skill_or(raw.injuries, defender_ids)
         .select(
             pl.col("gsis_id").alias("player_id"),
             *_season_week(),

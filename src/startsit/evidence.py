@@ -62,6 +62,24 @@ KEY_QBS = 2
 KEY_CARRY_SHARE = 0.25
 KEY_TARGET_SHARE = 0.15
 TEAMMATE_NEWS = 3  # role-change news items about teammates, newest first
+# The opponent's key defenders: the top two pass rushers by sacks + QB hits (at least
+# MIN_PRESSURES), and the top two cornerbacks and the top linebacker by snaps who are on the field
+# for at least STARTER_SHARE of the defensive snaps in their games. Each matters to some positions.
+KEY_RUSHERS = 2
+MIN_PRESSURES = 5
+KEY_CORNERS = 2
+KEY_LINEBACKERS = 1
+STARTER_SHARE = 0.6
+COVERAGE_POSITIONS = {"CB", "DB", "S", "SAF", "FS", "SS"}
+LINEBACKER_POSITIONS = {"LB", "ILB", "MLB"}
+# Which defenders each position faces: pass rushers hit quarterbacks and stop runs, corners cover
+# receivers and tight ends, linebackers stop runs and cover tight ends.
+DEFENDER_ROLES: dict[str, tuple[str, ...]] = {
+    "QB": ("rusher", "corner"),
+    "RB": ("rusher", "linebacker"),
+    "WR": ("corner",),
+    "TE": ("corner", "linebacker"),
+}
 
 
 @dataclass(frozen=True)
@@ -77,8 +95,9 @@ class Question:
 
 
 @dataclass(frozen=True)
-class TeammateOut:
-    """A key teammate (KEY_QBS, KEY_CARRY_SHARE, KEY_TARGET_SHARE) who can't play this week."""
+class KeyPlayerOut:
+    """A key teammate (KEY_QBS, KEY_CARRY_SHARE, KEY_TARGET_SHARE) or opponent defender
+    (`DefenseUsage.key_players`) who can't play this week."""
 
     name: str
     role: str  # e.g. "QB, 224 snaps for BAL this season"
@@ -115,9 +134,10 @@ class PlayerContext:
     projection: ProjectionRow | None = None  # FantasyPros per-format projection
     news_status: NewsFactRow | None = None  # newest news fact this week that states a game status
     crowd: list[CrowdVoteRow] = field(default_factory=list)  # this week's Reddit votes, newest first
-    teammates_out: list[TeammateOut] = field(default_factory=list)  # key teammates, not the player himself
+    teammates_out: list[KeyPlayerOut] = field(default_factory=list)  # key teammates, not the player himself
     teammate_news: list[dict[str, Any]] = field(default_factory=list)  # teammates' role changes this week, with role
     defense: DefenseRank | None = None  # the opponent's, against the player's position
+    defenders_out: list[KeyPlayerOut] = field(default_factory=list)  # the opponent's key defenders this week
 
     @property
     def crowd_starts(self) -> int:
@@ -363,12 +383,12 @@ class TeamUsage:
 
 def teammates_out(
     db: Database, player_id: str, usage: TeamUsage, q: Question, since: str, until: str
-) -> list[TeammateOut]:
+) -> list[KeyPlayerOut]:
     """The team's key players this season who can't play this week, other than the player."""
     out = []
     for row, top_qb in usage.key_players():
         if row["player_id"] != player_id and (why := unavailable(db, row["player_id"], q, since, until)):
-            out.append(TeammateOut(row["name"], usage.role(row, row["position"]), *why, top_qb=top_qb))
+            out.append(KeyPlayerOut(row["name"], usage.role(row, row["position"]), *why, top_qb=top_qb))
     return out
 
 
@@ -383,6 +403,86 @@ def teammate_news(db: Database, player_id: str, usage: TeamUsage, since: str, un
     return [fact | {"role": usage.role(rows.get(pid), fact["position"])} for pid, fact in newest.items()][
         :TEAMMATE_NEWS
     ]
+
+
+def _count(n: float, word: str) -> str:
+    """ "1 sack", "2.5 sacks", "3 INTs"."""
+    shown = f"{n:g}"
+    return f"{shown} {word}" if shown == "1" else f"{shown} {word}s"
+
+
+def _passes(n: int) -> str:
+    return "1 pass defended" if n == 1 else f"{n} passes defended"
+
+
+@dataclass(frozen=True)
+class DefenseUsage:
+    """The opponent's defenders this season (`Database.team_defenders`), for picking its key players."""
+
+    team: str
+    rows: list[dict[str, Any]]
+
+    @staticmethod
+    def pressures(row: dict[str, Any]) -> float:
+        return float(row["sacks"] or 0) + (row["qb_hits"] or 0)
+
+    def starters(self, positions: set[str]) -> list[dict[str, Any]]:
+        """Defenders at these positions on the field for STARTER_SHARE of the snaps, most snaps first."""
+        return [r for r in self.rows if r["position"] in positions and (r["pct"] or 0) >= STARTER_SHARE]
+
+    def key_players(self, roles: tuple[str, ...]) -> list[tuple[dict[str, Any], str]]:
+        """The key defenders in these roles (rusher, corner, linebacker), each with his role text."""
+        found: list[tuple[dict[str, Any], str]] = []
+        rushers = sorted(
+            (r for r in self.rows if r["position"] not in COVERAGE_POSITIONS and self.pressures(r) >= MIN_PRESSURES),
+            key=self.pressures,
+            reverse=True,
+        )[:KEY_RUSHERS]
+        if "rusher" in roles:
+            found += [
+                (
+                    r,
+                    f"{r['position']}, {_count(r['sacks'] or 0, 'sack')} and {_count(r['qb_hits'] or 0, 'QB hit')} "
+                    "this season",
+                )
+                for r in rushers
+            ]
+        if "corner" in roles:
+            found += [
+                (
+                    r,
+                    f"CB, {_count(r['interceptions'] or 0, 'INT')} and {_passes(r['pass_defended'] or 0)} "
+                    f"this season, on the field for {r['pct']:.0%} of snaps",
+                )
+                for r in self.starters({"CB"})[:KEY_CORNERS]
+            ]
+        if "linebacker" in roles:
+            taken = {r["player_id"] for r, _ in found}
+            linebackers = [r for r in self.starters(LINEBACKER_POSITIONS) if r["player_id"] not in taken]
+            found += [
+                (
+                    r,
+                    f"{r['position']}, {_count(r['tackles_for_loss'] or 0, 'tackle')} for loss this season, "
+                    f"on the field for {r['pct']:.0%} of snaps",
+                )
+                for r in linebackers[:KEY_LINEBACKERS]
+            ]
+        return found
+
+
+def defenders_out(
+    db: Database, position: str, opponent: str, q: Question, since: str, until: str
+) -> list[KeyPlayerOut]:
+    """The opponent's key defenders against `position` who can't play this week."""
+    roles = DEFENDER_ROLES.get(position)
+    if not roles:
+        return []
+    usage = DefenseUsage(opponent, db.team_defenders(q.season, opponent, q.week))
+    out = []
+    for row, role in usage.key_players(roles):
+        if why := unavailable(db, row["player_id"], q, since, until):
+            out.append(KeyPlayerOut(row["name"], role, *why))
+    return out
 
 
 def defense_rank(db: Database, position: str, opponent: str, q: Question) -> DefenseRank | None:
@@ -451,6 +551,7 @@ def load_context(db: Database, player_id: str, q: Question) -> PlayerContext:
         teammates_out=teammates_out(db, player_id, team_usage, q, status_since, until) if team_usage else [],
         teammate_news=teammate_news(db, player_id, team_usage, status_since, until) if team_usage else [],
         defense=defense_rank(db, player["position"], opponent, q) if opponent else None,
+        defenders_out=defenders_out(db, player["position"], opponent, q, status_since, until) if opponent else [],
     )
 
 
@@ -511,19 +612,26 @@ def _fewest(rank: int) -> str:
 
 
 def defense_facts(ctx: PlayerContext, q: Question) -> list[Fact]:
-    d = ctx.defense
-    if d is None:
-        return []
+    """The opponent's defense against the player's position, and its key defenders who can't play."""
+    facts = []
     position = ctx.player["position"]
-    return [
-        Fact(
-            "defense",
-            f"{d.defense} defense vs {position}s this season: {d.per_game:.1f} {q.label} pts allowed per game to "
-            f"{position}s over {_plural(d.games, 'game')}, {_fewest(d.rank)} of {d.teams} teams "
-            "(the fewest = the toughest matchup)",
-            NFLVERSE_URL,
+    if d := ctx.defense:
+        facts.append(
+            Fact(
+                "defense",
+                f"{d.defense} defense vs {position}s this season: {d.per_game:.1f} {q.label} pts allowed per game "
+                f"to {position}s over {_plural(d.games, 'game')}, {_fewest(d.rank)} of {d.teams} teams "
+                "(the fewest = the toughest matchup)",
+                NFLVERSE_URL,
+            )
         )
-    ]
+    if ctx.defenders_out:
+        g = ctx.game
+        opponent = (g["away_team"] if g["home_team"] == ctx.team else g["home_team"]) if g else "Opponent"
+        each = "; ".join(f"{p.name} ({p.role}) {p.status}" for p in ctx.defenders_out)
+        source = next((p.source_url for p in ctx.defenders_out if p.source_url), None)
+        facts.append(Fact("defense", f"{opponent} key defenders unavailable: {each}.", source))
+    return facts
 
 
 def consensus_facts(ctx: PlayerContext, q: Question) -> list[Fact]:

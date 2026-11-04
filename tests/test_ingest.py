@@ -29,6 +29,11 @@ def stat_row(player_id, week, position="WR", season_type="REG", **kw):
         wopr=0.3,
         fantasy_points=6.0,
         fantasy_points_ppr=10.0,
+        def_sacks=0.0,
+        def_qb_hits=0,
+        def_interceptions=0,
+        def_pass_defended=0,
+        def_tackles_for_loss=0,
     )
     return row | kw
 
@@ -36,11 +41,11 @@ def stat_row(player_id, week, position="WR", season_type="REG", **kw):
 def make_raw(stats=(), snaps=(), opp=(), injuries=(), games=(), rosters=()):
     players = pl.DataFrame(
         dict(
-            gsis_id=["G1", "G2", "G3"],
-            pfr_id=["P1", "P2", None],
-            display_name=["Wide Out", "Snap Only", "Lineman"],
-            position=["WR", "FB", "OL"],
-            latest_team=["DET", "GB", "DET"],
+            gsis_id=["G1", "G2", "G3", "D1", "D2"],
+            pfr_id=["P1", "P2", None, "PD1", "PD2"],
+            display_name=["Wide Out", "Snap Only", "Lineman", "Edge Rusher", "Cover Corner"],
+            position=["WR", "FB", "OL", "DE", "CB"],
+            latest_team=["DET", "GB", "DET", "GB", "GB"],
         )
     )
     snap_schema = dict(
@@ -53,6 +58,8 @@ def make_raw(stats=(), snaps=(), opp=(), injuries=(), games=(), rosters=()):
         opponent=pl.String,
         offense_snaps=pl.Float64,
         offense_pct=pl.Float64,
+        defense_snaps=pl.Float64,
+        defense_pct=pl.Float64,
     )
     opp_schema = dict(
         player_id=pl.String,
@@ -147,7 +154,13 @@ def snap(pfr, week, pct, position="WR", game_type="REG"):
         opponent="GB",
         offense_snaps=pct * 60,
         offense_pct=pct,
+        defense_snaps=0.0,
+        defense_pct=0.0,
     )
+
+
+def defense_snap(pfr, week, pct, position, team="GB"):
+    return snap(pfr, week, 0.0, position) | dict(team=team, defense_snaps=pct * 60, defense_pct=pct)
 
 
 def test_player_weeks_joins_snaps_and_expected_points():
@@ -285,12 +298,14 @@ def test_run_is_idempotent(db):
             "injuries": 1,
             "usage_features": 2,
             "games": 2,
+            "defenders": 0,
+            "defender_weeks": 0,
         }
     )
     assert db.query("select count(*) as n from player_weeks")[0]["n"] == 2
     assert db.query("select injury from injuries")[0]["injury"] == "Hamstring"
-    assert db.query("select count(*) as n from ingest_runs")[0]["n"] == 12
-    assert [r["source"] for r in db.recent_runs(2)] and len(db.recent_runs(100)) == 12
+    assert db.query("select count(*) as n from ingest_runs")[0]["n"] == 16
+    assert [r["source"] for r in db.recent_runs(2)] and len(db.recent_runs(100)) == 16
 
 
 def test_upsert_updates_existing_rows(db):
@@ -405,3 +420,40 @@ def test_optional_steps_log_failures_without_stopping(caplog):
 
     _optional("rankings re-check", boom)
     assert "rankings re-check failed; continuing" in caplog.text
+
+
+def test_defenders_get_snaps_stats_injuries_and_roster_status(db):
+    def injury_row(gsis, position):
+        return dict(
+            gsis_id=gsis,
+            season=2026,
+            week=2,
+            game_type="REG",
+            position=position,
+            team="GB",
+            report_status="Out",
+            practice_status="Did Not Participate In Practice",
+            report_primary_injury="Knee",
+            practice_primary_injury=None,
+        )
+
+    raw = make_raw(
+        stats=[
+            stat_row("G1", 1),
+            stat_row("D1", 1, position="DE", team="GB", def_sacks=1.5, def_qb_hits=3),
+            stat_row("D2", 1, position="CB", team="GB", def_interceptions=1, def_pass_defended=2),
+            stat_row("D9", 1, position="LB", team="GB", def_tackles_for_loss=1),  # not in the players table
+        ],
+        snaps=[snap("P1", 1, 0.8), defense_snap("PD1", 1, 0.85, "DE"), defense_snap("PD2", 1, 0.97, "CB")],
+        injuries=[injury_row("D2", "CB"), injury_row("X9", "LB")],  # X9: a defender who never played
+        rosters=[roster("G1", 1, "DET"), roster("D1", 1, "GB", "RES", "DE"), roster("X9", 1, "GB", position="LB")],
+        games=[game(1, "DET", "GB")],
+    )
+    counts = run(db, raw, 2026)
+    assert (counts["defenders"], counts["defender_weeks"], counts["injuries"], counts["roster_weeks"]) == (2, 3, 1, 2)
+    assert {d["name"]: d["position"] for d in db.all_defenders()} == {"Edge Rusher": "DE", "Cover Corner": "CB"}
+    [rusher] = db.query("select * from defender_weeks where player_id = 'D1'")
+    assert (rusher["defense_snaps"], rusher["defense_pct"], rusher["sacks"], rusher["qb_hits"]) == (51, 0.85, 1.5, 3)
+    assert db.injury("D2", 2026, 2)["report_status"] == "Out"
+    assert db.roster_status("D1", 2026, 1)["status"] == "RES"
+    assert [r["name"] for r in db.all_players()] == ["Wide Out"]  # defenders aren't players users can ask about
