@@ -37,12 +37,12 @@ def api_player(fp_id, std=10.0, half=12.0, ppr=14.0, rec=4.0):
 
 
 class FakeClient:
-    def __init__(self, fail_after=None):
-        self.calls, self.fail_after = [], fail_after
+    def __init__(self, fail_after=None, error=projections.FantasyProsQuotaExceeded):
+        self.calls, self.fail_after, self.error = [], fail_after, error
 
     def get(self, path, params):
         if self.fail_after is not None and len(self.calls) >= self.fail_after:
-            raise projections.FantasyProsQuotaExceeded("FantasyPros daily quota reached")
+            raise self.error("FantasyPros stopped")
         self.calls.append((path, params))
         return {"players": [api_player(i) for i in params["players"].split(":")]}
 
@@ -70,6 +70,8 @@ def test_fetch_chunks_by_ten_with_colon_separated_ids_and_stops_at_the_quota():
     )
     partial = projections.fetch(FakeClient(fail_after=1), 2026, 7, wanted)
     assert len(partial) == 10  # keeps what it fetched before the quota ran out
+    down = projections.fetch(FakeClient(fail_after=2, error=projections.FantasyProsUnavailable), 2026, 7, wanted)
+    assert len(down) == 20  # and before FantasyPros kept failing
 
 
 def test_chunks_go_in_rank_order_across_positions():
@@ -115,8 +117,8 @@ def test_client_spaces_calls_and_retries_a_throttle_once(monkeypatch):
 
     def fake_urlopen(req, timeout):
         r = responses.pop(0)
-        if r == 429:
-            raise urllib.error.HTTPError(req.full_url, 429, "Limit Exceeded", {}, io.BytesIO(b""))
+        if isinstance(r, int):
+            raise urllib.error.HTTPError(req.full_url, r, "Error", {}, io.BytesIO(b""))
         return io.BytesIO(b'{"players": []}')
 
     monkeypatch.setattr(http.urllib.request, "urlopen", fake_urlopen)
@@ -128,4 +130,12 @@ def test_client_spaces_calls_and_retries_a_throttle_once(monkeypatch):
     assert any(0 < s <= client.min_interval for s in sleeps)  # spacing before the next call
     responses[:] = [429, 429]
     with pytest.raises(projections.FantasyProsQuotaExceeded):
+        client.get("p", {})
+    responses[:] = [502, "ok"]  # a server error gets the same one retry
+    assert client.get("p", {}) == {"players": []}
+    responses[:] = [502, 503]
+    with pytest.raises(projections.FantasyProsUnavailable):
+        client.get("p", {})
+    responses[:] = [404]  # anything else isn't retried
+    with pytest.raises(urllib.error.HTTPError):
         client.get("p", {})

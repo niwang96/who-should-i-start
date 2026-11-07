@@ -35,8 +35,19 @@ CHUNK_SIZE = 10  # the free tier's row limit per call
 POSITION_DEPTH = {"QB": 36, "RB": 72, "WR": 96, "TE": 36}
 
 
-class FantasyProsQuotaExceeded(RuntimeError):
+class FantasyProsStopped(RuntimeError):
+    """FantasyPros can't serve more calls this run; keep what was fetched."""
+
+
+class FantasyProsQuotaExceeded(FantasyProsStopped):
     pass
+
+
+class FantasyProsUnavailable(FantasyProsStopped):
+    """A server error (e.g. 502) that persisted after a retry."""
+
+
+SERVER_ERRORS = (500, 502, 503, 504)
 
 
 @dataclass
@@ -56,7 +67,8 @@ class FantasyProsClient:
         return cls(key) if key else None
 
     def get(self, path: str, params: dict[str, Any]) -> Any:
-        """GET with spacing; a 429 is retried once after a pause, then raised as FantasyProsQuotaExceeded."""
+        """GET with spacing. A 429 or a server error is retried once after a pause, then raised as
+        FantasyProsQuotaExceeded or FantasyProsUnavailable."""
         url = f"{BASE_URL}/{path}?{urllib.parse.urlencode(params)}"
         for attempt in range(2):
             wait = self.min_interval - (time.monotonic() - self._last_call)
@@ -66,12 +78,14 @@ class FantasyProsClient:
             try:
                 return json.loads(get_bytes(url, {"x-api-key": self.api_key}, self.timeout))
             except urllib.error.HTTPError as e:
-                if e.code != 429:
+                if e.code != 429 and e.code not in SERVER_ERRORS:
                     raise
                 if attempt == 0:
                     self.sleep(self.throttle_wait)
                     continue
-                raise FantasyProsQuotaExceeded("FantasyPros rate limit or daily quota reached") from e
+                if e.code == 429:
+                    raise FantasyProsQuotaExceeded("FantasyPros rate limit or daily quota reached") from e
+                raise FantasyProsUnavailable(f"FantasyPros server error {e.code}") from e
         raise AssertionError("unreachable")
 
 
@@ -100,7 +114,8 @@ def chunks_by_rank(wanted: dict[str, list[str]]) -> list[tuple[str, list[str]]]:
 
 
 def fetch(client: FantasyProsClient, season: int, week: int, wanted: dict[str, list[str]]) -> list[dict[str, Any]]:
-    """Raw projection rows, 10 players per call; stops early (keeping what it has) when the quota runs out."""
+    """Raw projection rows, 10 players per call; stops early (keeping what it has) when the quota runs out
+    or FantasyPros keeps failing."""
     rows: list[dict[str, Any]] = []
     for position, chunk in chunks_by_rank(wanted):
         try:
@@ -109,7 +124,7 @@ def fetch(client: FantasyProsClient, season: int, week: int, wanted: dict[str, l
                 f"{season}/projections",
                 {"position": position, "week": week, "players": ":".join(chunk)},
             )
-        except FantasyProsQuotaExceeded as e:
+        except FantasyProsStopped as e:
             log.warning("%s; keeping %s projections fetched so far", e, len(rows))
             return rows
         rows.extend(data.get("players") or [])
