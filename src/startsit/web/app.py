@@ -32,7 +32,7 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 
 from startsit.db import Database, utc_now
 from startsit.decide import HIGH_MARGIN, MEDIUM_MARGIN, Decision, decide, decide_llm, record_recommendation
-from startsit.evaluate import CONFIDENCES, Report, build_report, group_of
+from startsit.evaluate import CONFIDENCES, OVERRIDE_LABELS, Report, build_report, group_of
 from startsit.evidence import (
     CROWD_MIN_LEAD,
     EASTERN,
@@ -210,6 +210,7 @@ def create_app(
         medium_margin=MEDIUM_MARGIN,
         confidences=CONFIDENCES,
         crowd_min_lead=CROWD_MIN_LEAD,
+        override_labels=OVERRIDE_LABELS,
     )
     templates.env.filters["eastern"] = eastern_time
     templates.env.filters["link_citations"] = link_citations

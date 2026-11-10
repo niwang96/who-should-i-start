@@ -28,7 +28,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 
 from startsit.db import Database, EvaluationRow, RecommendationRow, utc_iso
-from startsit.decide import CONFIDENCES
+from startsit.decide import CONFIDENCES, OVERRIDE_KINDS
 from startsit.scoring import Scoring, column
 
 # recommendations.visitor of the weekly benchmark set and its backfill of past weeks (startsit.benchmark)
@@ -37,6 +37,25 @@ BACKFILL = "benchmark-backfill"
 GROUPS = {BENCHMARK: "benchmark", BACKFILL: "backfill"}  # anything else is a real user
 AI_SOURCES = {"llm", "cache"}
 REASON_CHARS = 160  # of an override's reason, in the text report
+# Why the AI went against the baseline: a definite fact it cited (the only reason the override rule
+# accepts when the baseline favors someone), a tie it broke, or neither (from before the rule).
+FACT, TIE, OTHER = "fact", "tie", "other"
+OVERRIDE_LABELS = {FACT: "definite fact", TIE: "tie-break", OTHER: "other"}
+
+
+def cited_kinds(packet_json: str, decision_json: str) -> tuple[tuple[str, ...], str, float]:
+    """The evidence kinds the AI's baseline_disagreement cites (in order), that text, and the baseline margin."""
+    packet = json.loads(packet_json)
+    reason = json.loads(decision_json).get("baseline_disagreement", "")
+    kinds = {i["id"]: i["kind"] for p in packet["players"] for i in p.get("items", [])}
+    cited = [kinds[i] for i in dict.fromkeys(re.findall(r"\bE\d+\b", reason)) if i in kinds]
+    return tuple(dict.fromkeys(cited)), reason, float(packet.get("baseline_margin") or 0.0)
+
+
+def override_kind(kinds: tuple[str, ...], margin: float) -> str:
+    if set(kinds) & OVERRIDE_KINDS:
+        return FACT
+    return TIE if margin == 0 else OTHER
 
 
 def actual_points(db: Database, player: dict[str, Any], season: int, week: int, scoring: Scoring) -> float | None:
@@ -166,6 +185,7 @@ class Summary:
     consensus: Rate = field(default_factory=Rate)
     crowd: Rate = field(default_factory=Rate)
     overrides: Rate = field(default_factory=Rate)  # AI picks that went against the baseline: was the AI right?
+    overrides_by_kind: dict[str, Rate] = field(default_factory=lambda: {k: Rate() for k in OVERRIDE_LABELS})
     by_confidence: dict[str, Rate] = field(default_factory=lambda: {c: Rate() for c in CONFIDENCES})
 
     def add(self, row: dict[str, Any]) -> None:
@@ -182,6 +202,8 @@ class Summary:
         self.crowd.add(row["crowd_hit"])
         if row["pick"] != row["baseline_pick"]:
             self.overrides.add(row["pick_hit"])
+            kinds, _, margin = cited_kinds(row["packet_json"], row["decision_json"])
+            self.overrides_by_kind[override_kind(kinds, margin)].add(row["pick_hit"])
         if row["confidence"] in self.by_confidence:
             self.by_confidence[row["confidence"]].add(row["pick_hit"])
 
@@ -205,20 +227,24 @@ class Matchup:
     crowd_hit: int | None = None
     reason: str = ""  # why the AI went against the baseline (its baseline_disagreement), if it did
     reason_kinds: tuple[str, ...] = ()  # the kinds of evidence that reason cites, e.g. ("news",)
+    baseline_margin: float = 0.0  # the baseline's edge in points when asked (0 = a tie)
 
     @property
     def overrode(self) -> bool:
         """Whether the AI went against the baseline."""
         return self.ai_answered and self.pick != self.baseline_pick
 
+    @property
+    def override_kind(self) -> str:
+        """fact, tie or other (OVERRIDE_LABELS), for an override."""
+        return override_kind(self.reason_kinds, self.baseline_margin)
+
     @staticmethod
     def from_row(row: dict[str, Any]) -> Matchup:
         players = json.loads(row["packet_json"])["players"]
         names = {p["player_id"]: p["name"] for p in players}
         points = json.loads(row["points_json"])
-        reason = json.loads(row["decision_json"]).get("baseline_disagreement", "")
-        kinds = {i["id"]: i["kind"] for p in players for i in p.get("items", [])}
-        cited = [kinds[i] for i in dict.fromkeys(re.findall(r"\bE\d+\b", reason)) if i in kinds]
+        kinds, reason, margin = cited_kinds(row["packet_json"], row["decision_json"])
         return Matchup(
             rec_id=row["rec_id"],
             week=row["week"],
@@ -234,7 +260,8 @@ class Matchup:
             crowd_pick=names.get(row["crowd_pick"]) if row["crowd_pick"] else None,
             crowd_hit=row["crowd_hit"],
             reason=reason,
-            reason_kinds=tuple(dict.fromkeys(cited)),
+            reason_kinds=kinds,
+            baseline_margin=margin,
         )
 
 
@@ -289,15 +316,21 @@ def report_text(report: Report) -> str:
                 f"| consensus {s.consensus} | crowd {s.crowd} | AI overrides {s.overrides} || all {s.matchups}: "
                 f"baseline {s.baseline_all} | consensus {s.consensus_all} | crowd {s.crowd_all}"
             )
-        conf = report.totals[group].by_confidence
-        lines.append("  AI by confidence: " + ", ".join(f"{c} {conf[c]}" for c in CONFIDENCES))
+        total = report.totals[group]
+        lines.append("  AI by confidence: " + ", ".join(f"{c} {total.by_confidence[c]}" for c in CONFIDENCES))
+        if total.overrides.decided:
+            by_kind = total.overrides_by_kind
+            lines.append(
+                "  AI overrides by reason: " + ", ".join(f"{OVERRIDE_LABELS[k]} {by_kind[k]}" for k in by_kind)
+            )
         overrides = report.overrides(group)
         if overrides:
-            lines.append("  AI overrides of the baseline (actual points; evidence cited; reason):")
+            lines.append("  AI overrides of the baseline (reason type; actual points; evidence cited; reason):")
         for m in overrides:
             verdict = "right" if m.pick_hit == 1 else "wrong" if m.pick_hit == 0 else "tie"
             lines.append(
-                f"    week {m.week} {m.scoring}: {verdict:5} {m.pick} {m.points[m.pick]:g} over "
+                f"    week {m.week} {m.scoring}: {verdict:5} {OVERRIDE_LABELS[m.override_kind]}; "
+                f"{m.pick} {m.points[m.pick]:g} over "
                 f"{m.baseline_pick} {m.points[m.baseline_pick]:g}; {', '.join(m.reason_kinds) or 'no ids'}; "
                 f"{m.reason[:REASON_CHARS]}"
             )
