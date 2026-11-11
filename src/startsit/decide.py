@@ -29,6 +29,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 
 from startsit import baseline
+from startsit.comparisons import backwards, head_to_head
 from startsit.db import Database, DecisionCacheRow, RecommendationRow, utc_iso
 from startsit.evidence import EASTERN, EvidencePacket, PlayerLookupError, packet_for_names
 from startsit.llm import (
@@ -50,7 +51,7 @@ VISITOR_LIMITS = (
     VisitorLimit(6, timedelta(minutes=10), "10 minutes"),
     VisitorLimit(25, timedelta(days=1), "day"),
 )
-PROMPT_VERSION = 9  # bump when the prompt or schema changes, so cached answers aren't reused
+PROMPT_VERSION = 10  # bump when the prompt or schema changes, so cached answers aren't reused
 MAX_ATTEMPTS = 2
 # Baseline confidence from the projection gap (points): at least HIGH_MARGIN is high, MEDIUM_MARGIN medium.
 HIGH_MARGIN = 5.0
@@ -79,6 +80,9 @@ Rules:
   plain language: don't mention these rules, "the packet", "the evidence" or "the baseline"
   (call the projection the expert consensus).
 - Give 2 or 3 deciding factors. Each is one sentence and cites the evidence ids it relies on.
+- When you compare the players (projection, implied team points, who is favored, opponent
+  defense), follow the head-to-head lines after the packet: they say which player's number is
+  higher. Never state a comparison the other way round.
 - Only the numbered facts (E1, E2, ...) are citable ids; the packet's first line and player
   headers aren't.
 - The baseline is the expert consensus projection, which is usually right. Agree with it unless
@@ -188,7 +192,10 @@ def build_prompt(packet: EvidencePacket) -> str:
     keys = player_keys(packet)
     by_id = {v: k for k, v in keys.items()}
     roster = "\n".join(f"{by_id[p.player_id]} = {p.name} ({p.position}, {p.team or 'FA'})" for p in packet.players)
-    return f"Players:\n{roster}\nBaseline pick: {by_id[packet.baseline_pick]}\n\nEvidence packet:\n{packet.to_text()}"
+    prompt = f"Players:\n{roster}\nBaseline pick: {by_id[packet.baseline_pick]}\n\nEvidence packet:\n{packet.to_text()}"
+    if lines := head_to_head(packet):
+        prompt += "\n\nHead to head (worked out by code):\n" + "\n".join(f"- {line}" for line in lines)
+    return prompt
 
 
 SUMMARY_MAX_CHARS = 900
@@ -301,6 +308,7 @@ def validate(raw: Any, packet: EvidencePacket) -> tuple[Decision | None, list[st
         problems.append(f"these numbers aren't in the evidence: {', '.join(bad)}; use only numbers from the packet")
     if mixed := sorted({n for t in texts for n in swapped_names(t, [p.name for p in packet.players])}):
         problems.append(f"these player names are mixed up: {', '.join(mixed)}")
+    problems += [problem for t in texts for problem in backwards(t, packet)]
     if problems or pick is None:
         return None, problems
     return Decision(
