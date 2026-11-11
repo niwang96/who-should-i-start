@@ -169,14 +169,37 @@ def test_report_compares_the_picks_on_the_matchups_the_ai_answered(week):
                                 "team": "DAL",
                                 "items": [{"id": "E2", "kind": "news"}],
                             },
-                        ]
+                        ],
+                        "baseline_margin": 1.2,
                     }
                 ),
             ),
             rec("ai-wrong", ab, pick="B", baseline_pick="B", source="cache", confidence="low"),  # no crowd lean
             rec("no-ai", ab, pick="B", source="baseline", crowd_pick="B"),  # counted as a matchup, not in the rates
-            rec("bench", ab, pick="A", visitor=evaluate.BENCHMARK),
-            rec("backfill", ab, pick="B", visitor=evaluate.BACKFILL),
+            # A tie broken (no reason needed), and an override from before the rule (usage only).
+            rec("bench", ab, pick="A", baseline_pick="B", visitor=evaluate.BENCHMARK),
+            rec(
+                "backfill",
+                ab,
+                pick="B",
+                baseline_pick="A",
+                visitor=evaluate.BACKFILL,
+                decision_json=json.dumps({"baseline_disagreement": "B's usage [E1]."}),
+                packet_json=json.dumps(
+                    {
+                        "players": [
+                            {"player_id": "A", "name": "Player A", "team": "PHI", "items": []},
+                            {
+                                "player_id": "B",
+                                "name": "Player B",
+                                "team": "DAL",
+                                "items": [{"id": "E1", "kind": "usage"}],
+                            },
+                        ],
+                        "baseline_margin": 2.0,
+                    }
+                ),
+            ),
         ],
     )
     evaluate.score_pending(week, NOW)
@@ -201,7 +224,13 @@ def test_report_compares_the_picks_on_the_matchups_the_ai_answered(week):
     assert override.points == {"Player A": 20.0, "Player B": 12.0} and override.overrode
     assert (override.crowd_pick, override.crowd_hit) == ("Player A", 1)
     assert override.reason_kinds == ("news", "usage")  # in citation order; E9 isn't in the packet
-    assert report.overrides("benchmark") == []  # it agreed with the baseline
+    assert [m.override_kind for g in ("users", "benchmark", "backfill") for m in report.overrides(g)] == [
+        "fact",
+        "tie",
+        "other",
+    ]
+    assert str(users.overrides_by_kind["fact"]) == "1/1 (100%)" and str(users.overrides_by_kind["tie"]) == "-"
+    assert str(report.totals["backfill"].overrides_by_kind["other"]) == "0/1 (0%)"
     assert len(report.matchups["users"]) == 3
     no_ai = next(m for m in report.matchups["users"] if m.rec_id == "no-ai")
     assert not no_ai.ai_answered and not no_ai.overrode and no_ai.consensus_pick == "Player B"
@@ -210,9 +239,13 @@ def test_report_compares_the_picks_on_the_matchups_the_ai_answered(week):
     assert "users:\n    week 7: 2 AI-answered | AI 1/2 (50%) | baseline 0/2 (0%)" in text
     assert "| crowd 1/1 (100%) | AI overrides" in text
     assert (
-        "  AI overrides of the baseline (actual points; evidence cited; reason):\n"
-        "    week 7 ppr: right Player A 20 over Player B 12; news, usage; Player B was ruled out [E2] (see E9, E1)."
+        "  AI overrides by reason: definite fact 1/1 (100%), tie-break -, other -\n"
+        "  AI overrides of the baseline (reason type; actual points; evidence cited; reason):\n"
+        "    week 7 ppr: right definite fact; Player A 20 over Player B 12; news, usage; "
+        "Player B was ruled out [E2] (see E9, E1)."
     ) in text
+    assert "right tie-break; Player A 20 over Player B 12; no ids;" in text
+    assert "wrong other; Player B 12 over Player A 20; usage; B's usage [E1]." in text
     assert "|| all 3: baseline 0/3 (0%) | consensus 0/3 (0%) | crowd 1/2 (50%)" in text
     assert (
         "benchmark:" in text

@@ -109,6 +109,11 @@
         <h4>When the AI went against the baseline</h4>
         {% if s.overrides.decided %}
         <p>Right {{ pct(s.overrides) }} of the time ({{ of(s.overrides) }}).</p>
+        <ul class="compact">
+          {% for kind, rate in s.overrides_by_kind.items() if rate.decided %}
+          <li>{{ override_labels[kind] | capitalize }}: right {{ pct(rate) }} ({{ of(rate) }})</li>
+          {% endfor %}
+        </ul>
         {% else %}
         <p class="muted">No decided overrides yet.</p>
         {% endif %}
@@ -120,7 +125,8 @@
             {% for m in overrides[:30] %}
             <li>
               {{ verdict(m.pick_hit) }}
-              Week {{ m.week }}, {{ scoring_labels[m.scoring] }}: AI started <strong>{{ m.pick }}</strong>
+              Week {{ m.week }}, {{ scoring_labels[m.scoring] }}, {{ override_labels[m.override_kind] }}:
+              AI started <strong>{{ m.pick }}</strong>
               <span class="muted">({{ "%.1f"|format(m.points[m.pick]) }})</span> over {{ m.baseline_pick }}
               <span class="muted">({{ "%.1f"|format(m.points[m.baseline_pick]) }})</span>
               <a class="why" href="/record/{{ m.rec_id }}">Why?</a>

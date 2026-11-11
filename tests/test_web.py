@@ -220,6 +220,7 @@ def test_track_record_page(path, monkeypatch):
     assert "Small sample: with 1 decided matchups" in page
     assert "AI started <strong>Player A</strong>" in page and "(20.0)</span> over Player B" in page
     assert "Right 100% of the time (1 of 1)" in page  # the users' override
+    assert "Week 7, PPR, tie-break:" in page and "Tie-break: right 100% (1 of 1)" in page  # projections were tied
     assert "The AI didn't answer any of these yet" in page  # the backfill had only baseline picks
     assert '<span class="label">Reddit crowd</span>' in page and page.count('<th scope="col">Crowd</th>') == 2
     assert page.count("no lean") == 0 and "start/sit votes from r/fantasyfootball" in page
