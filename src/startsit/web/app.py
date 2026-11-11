@@ -30,6 +30,7 @@ from fastapi.templating import Jinja2Templates
 from markupsafe import Markup, escape
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
+from startsit import experts
 from startsit.db import Database, utc_now
 from startsit.decide import HIGH_MARGIN, MEDIUM_MARGIN, Decision, decide, decide_llm, record_recommendation
 from startsit.evaluate import CONFIDENCES, OVERRIDE_LABELS, Report, build_report, group_of
@@ -37,10 +38,12 @@ from startsit.evidence import (
     CROWD_MIN_LEAD,
     EASTERN,
     EvidencePacket,
+    build_packet,
     current_week,
     eastern_time,
     packet_for_names,
 )
+from startsit.ingest.projections import FantasyProsClient
 from startsit.llm import BudgetedLLM, visitor_id
 from startsit.names import PlayerMatcher
 from startsit.scoring import LABELS, SCORINGS, Scoring
@@ -57,6 +60,18 @@ REC_ID = re.compile(r"[0-9a-f]{32}")  # recommendation ids are uuid4 hex
 # and the page would then show nothing, so the AI's share leaves room for a cold start, the
 # database work and logging the answer. Past it, the expert-consensus pick is shown instead.
 AI_ANSWER_SECONDS = 20.0
+# FantasyPros expert split fetch on the site: short, so the page stays under Vercel's 30 s limit.
+# Whatever it takes comes off the AI's time, which keeps at least MIN_AI_SECONDS.
+EXPERTS_TIMEOUT = 4.0
+MIN_AI_SECONDS = 12.0
+
+
+def experts_client() -> FantasyProsClient | None:
+    """A FantasyPros client for the site: one quick try, a short pause and one retry at most."""
+    key = os.environ.get("FANTASYPROS_API_KEY")
+    return FantasyProsClient(key, timeout=EXPERTS_TIMEOUT, min_interval=0.0, throttle_wait=0.5) if key else None
+
+
 RECORD_CACHE_SECONDS = 3600  # results change once a day, when the stats refresh scores the new games
 
 # The track record page's groups, in the order shown (keys from startsit.evaluate.group_of).
@@ -81,6 +96,7 @@ KIND_LABELS = {
     "availability": "Availability",
     "team": "Team news",
     "consensus": "Expert consensus",
+    "experts": "Experts head to head",
     "projection": "Projection",
     "matchup": "Matchup",
     "defense": "Opponent defense",
@@ -193,6 +209,7 @@ def create_app(
     llm_factory: Callable[[Database, str | None], BudgetedLLM | None] = decide_llm,
     clock: Callable[[], datetime] = utc_now,
     diagnostics: bool | None = None,
+    fantasypros: Callable[[], FantasyProsClient | None] = experts_client,
 ) -> FastAPI:
     """The app. `diagnostics` adds /diag/limits; by default only on Vercel preview deployments."""
     if diagnostics is None:
@@ -301,7 +318,12 @@ def create_app(
             # A player whose game has kicked off is locked in or out of the lineup in most leagues, so
             # there's no choice left: no AI call, and nothing logged for the evaluation.
             return {"packet": packet, "locked": started, "names": packet.names, "info": info}
-        decision: Decision = decide(db, packet, llm_factory(db, visitor), deadline=AI_ANSWER_SECONDS)
+        started_at = time.monotonic()
+        ids = [p.player_id for p in packet.players]
+        if experts.ensure(db, fantasypros(), info.season, info.week, ids, clock()):
+            packet = build_packet(db, ids, scoring, info.season, info.week, as_of=clock())
+        ai_seconds = max(MIN_AI_SECONDS, AI_ANSWER_SECONDS - (time.monotonic() - started_at))
+        decision: Decision = decide(db, packet, llm_factory(db, visitor), deadline=ai_seconds)
         try:
             record_recommendation(db, packet, decision, visitor)
         except Exception:  # logging must never cost the user their answer

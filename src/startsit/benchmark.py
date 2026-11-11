@@ -19,10 +19,12 @@ import time
 from collections.abc import Callable
 from datetime import datetime, timedelta
 
+from startsit import experts
 from startsit.db import Database, GameRow, utc_day, utc_now
 from startsit.decide import decide, record_recommendation
 from startsit.evaluate import BACKFILL, BENCHMARK
 from startsit.evidence import EASTERN, build_packet, kickoff
+from startsit.ingest.projections import FantasyProsClient
 from startsit.llm import BudgetedLLM
 from startsit.scoring import SCORINGS, Scoring
 
@@ -138,6 +140,7 @@ def run(
     tag: str = BENCHMARK,
     clock: Callable[[], datetime] = utc_now,
     sleep: Callable[[float], None] = time.sleep,
+    fantasypros: FantasyProsClient | None = None,
 ) -> int:
     """Ask the AI the week's benchmark matchups and log the answers; returns how many were logged.
 
@@ -145,7 +148,8 @@ def run(
     morning, so the packets hold only what was known then. Budget checks use the real clock.
     Questions already logged for the week are skipped, so an interrupted set resumes. The set is
     marked complete only if every matchup was asked; it stops early (and logs nothing for the
-    matchup) when the budget is spent or the AI doesn't answer.
+    matchup) when the budget is spent or the AI doesn't answer. With a `fantasypros` client, each
+    matchup's expert split is fetched first when the daily cap allows (`startsit.experts`).
     """
     asked_at = as_of or clock()
     already = asked(db, season, week)
@@ -160,6 +164,7 @@ def run(
         if pause:
             sleep(pause)
         before = llm.remaining(clock())
+        experts.ensure(db, fantasypros, season, week, [a, b], clock())
         packet = build_packet(db, [a, b], scoring, season, week, as_of=asked_at)
         decision = decide(db, packet, llm)
         pause = CALL_SPACING * max(0, before - llm.remaining(clock()))

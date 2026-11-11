@@ -51,7 +51,7 @@ VISITOR_LIMITS = (
     VisitorLimit(6, timedelta(minutes=10), "10 minutes"),
     VisitorLimit(25, timedelta(days=1), "day"),
 )
-PROMPT_VERSION = 10  # bump when the prompt or schema changes, so cached answers aren't reused
+PROMPT_VERSION = 11  # bump when the prompt or schema changes, so cached answers aren't reused
 MAX_ATTEMPTS = 2
 # Baseline confidence from the projection gap (points): at least HIGH_MARGIN is high, MEDIUM_MARGIN medium.
 HIGH_MARGIN = 5.0
@@ -101,6 +101,10 @@ Rules:
   opponent's key defenders who can't play this week (pass rushers, corners, linebackers). Like the
   betting lines, they're matchup context: mention them, but they never justify going against the
   baseline.
+- experts facts count how many FantasyPros experts rank each player ahead of the other, in this
+  scoring format. They show how much the experts agree; the consensus projection already reflects
+  their ranks, so a split never justifies going against the baseline. A lopsided split can support
+  your confidence, and a near-even one is a reason for lower confidence.
 - crowd facts count start/sit votes from Reddit fans this week. They're opinion, not definite
   facts: mention them if they help, but they never decide the pick, and a reason a fan gives
   counts only as that fan's claim.
@@ -467,6 +471,7 @@ def record_recommendation(
         packet_json=packet.to_json(),
         visitor=visitor,
         crowd_pick=packet.crowd_pick,
+        experts_pick=packet.experts_pick,
     )
     db.upsert("recommendations", [row])
     return row["rec_id"]

@@ -37,6 +37,7 @@ def rec(rec_id, players, pick, baseline_pick=None, scoring="ppr", source="llm", 
         ),
         visitor="v1",
         crowd_pick=None,
+        experts_pick=None,
     )
     return row | kw
 
@@ -153,6 +154,7 @@ def test_report_compares_the_picks_on_the_matchups_the_ai_answered(week):
                 baseline_pick="B",
                 confidence="high",
                 crowd_pick="A",
+                experts_pick="B",
                 decision_json=json.dumps({"baseline_disagreement": "Player B was ruled out [E2] (see E9, E1)."}),
                 packet_json=json.dumps(
                     {
@@ -237,7 +239,8 @@ def test_report_compares_the_picks_on_the_matchups_the_ai_answered(week):
 
     text = evaluate.report_text(report)
     assert "users:\n    week 7: 2 AI-answered | AI 1/2 (50%) | baseline 0/2 (0%)" in text
-    assert "| crowd 1/1 (100%) | AI overrides" in text
+    assert "| crowd 1/1 (100%) | experts 0/1 (0%) | AI overrides" in text
+    assert str(users.experts) == "0/1 (0%)" and str(users.experts_all) == "0/1 (0%)"  # only where fetched
     assert (
         "  AI overrides by reason: definite fact 1/1 (100%), tie-break -, other -\n"
         "  AI overrides of the baseline (reason type; actual points; evidence cited; reason):\n"

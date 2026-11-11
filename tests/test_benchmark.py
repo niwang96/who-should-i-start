@@ -102,6 +102,17 @@ def test_run_asks_the_ai_and_logs_benchmark_recommendations(week8):
     assert week8.llm_calls_since(SATURDAY, "benchmark") == 3
 
 
+def test_run_fetches_each_matchups_expert_split_first(week8, monkeypatch):
+    from startsit import experts
+
+    fetched = []
+    monkeypatch.setattr(experts, "ensure", lambda db, client, season, week, ids, now: fetched.append((client, ids)))
+    llm = BudgetedLLM(FakeProvider(respond=agree), week8, "benchmark", 10, clock=lambda: SUNDAY_MORNING)
+    client = object()
+    benchmark.run(week8, llm, 2026, 8, clock=lambda: SUNDAY_MORNING, sleep=lambda s: None, fantasypros=client)
+    assert len(fetched) == 3 and all(c is client and len(ids) == 2 for c, ids in fetched)
+
+
 def test_run_stops_when_the_budget_is_spent(week8):
     llm = BudgetedLLM(FakeProvider(respond=agree), week8, "benchmark", 1, clock=lambda: SUNDAY_MORNING)
     assert benchmark.run(week8, llm, 2026, 8, clock=lambda: SUNDAY_MORNING, sleep=lambda s: None) == 1
