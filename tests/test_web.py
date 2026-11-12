@@ -29,14 +29,17 @@ def path(tmp_path):
     return seed(tmp_path / "web.db")
 
 
-def client_for(path, provider=None, limits=()):
+def client_for(path, provider=None, limits=(), fantasypros=None):
     def llm_factory(db, visitor):
         if provider is None:
             return None
         return BudgetedLLM(provider, db, "decide", 10, visitor=visitor, visitor_limits=limits)
 
-    # Saturday before the week-7 Sunday games in the seeded schedule.
-    return TestClient(web.create_app(path, llm_factory, clock=lambda: datetime(2026, 10, 24, 18, 0, tzinfo=UTC)))
+    # Saturday before the week-7 Sunday games in the seeded schedule. No real FantasyPros calls in tests.
+    app = web.create_app(
+        path, llm_factory, clock=lambda: datetime(2026, 10, 24, 18, 0, tzinfo=UTC), fantasypros=lambda: fantasypros
+    )
+    return TestClient(app)
 
 
 def ask(client, *players, scoring="half", hx=False, ip="203.0.113.7"):
@@ -350,3 +353,20 @@ def test_the_ai_gets_a_time_limit_inside_the_hosts(path):
     provider = FakeProvider(responses=[ANSWER])
     ask(client_for(path, provider), "Alpha Back", "Bravo Back", hx=True)
     assert 0 < provider.timeouts[0] <= web.AI_ANSWER_SECONDS < 30  # Vercel's maxDuration
+
+
+def test_an_answer_fetches_the_expert_split_first_and_shows_it(path):
+    from test_experts import FakeClient, response
+
+    with Database(path) as db:
+        ids = [r["fantasypros_id"] for r in db.query("SELECT fantasypros_id FROM rankings ORDER BY player_id")]
+    fantasypros = FakeClient(response(*ids))
+    provider = FakeProvider(responses=[ANSWER])
+    r = ask(client_for(path, provider, fantasypros=fantasypros), "Alpha Back", "Bravo Back", scoring="ppr")
+    assert len(fantasypros.calls) == 1 and fantasypros.calls[0][1]["position"] == "RB"
+    assert "Experts head to head" in r.text and "3 of 3 rank Alpha Back ahead of Bravo Back" in r.text
+    assert "3 of 3 rank Alpha Back ahead" in provider.prompts[0]  # the AI saw it too
+    assert 12.0 <= provider.timeouts[0] <= web.AI_ANSWER_SECONDS  # the fetch's time comes off the AI's
+    with Database(path) as db:
+        [row] = db.query("select experts_pick from recommendations")
+    assert row["experts_pick"] == "A"

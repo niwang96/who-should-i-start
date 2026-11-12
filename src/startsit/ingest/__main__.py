@@ -192,7 +192,7 @@ def run_benchmark(db: Database, season: int, now: datetime | None = None) -> int
     if not benchmark.due(db, season, week, now or datetime.now(UTC)):
         return 0
     llm = benchmark_llm(db)
-    return benchmark.run(db, llm, season, week) if llm else 0
+    return benchmark.run(db, llm, season, week, fantasypros=projections.FantasyProsClient.from_env()) if llm else 0
 
 
 def run_backfill(db: Database, season: int, now: datetime | None = None) -> int:

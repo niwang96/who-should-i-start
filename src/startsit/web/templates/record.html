@@ -22,6 +22,7 @@
   {% for g in shown %}
   {% set s = report.totals[g.key] %}
   {% set crowd = s.crowd_all.decided > 0 %}
+  {% set experts = s.experts_all.decided > 0 %}
   <article class="card" id="{{ g.key }}">
     <h3>{{ g.title }}</h3>
     <p class="meta">{{ g.about }}</p>
@@ -50,6 +51,13 @@
         <span class="detail">{{ of(s.crowd) }} · only where it leaned</span>
       </div>
       {% endif %}
+      {% if s.experts.decided %}
+      <div class="tile">
+        <span class="label">Experts head to head</span>
+        <span class="value">{{ pct(s.experts) }}</span>
+        <span class="detail">{{ of(s.experts) }} · where fetched</span>
+      </div>
+      {% endif %}
     </div>
     {% if s.ai.decided < 100 %}
     <p class="note">Small sample: with {{ s.ai.decided }} decided matchups, differences of a few points are
@@ -64,7 +72,7 @@
     <div class="table-wrap">
       <table>
         <caption>By week (on the matchups the AI answered)</caption>
-        <thead><tr><th scope="col">Week</th><th scope="col">Matchups</th><th scope="col">AI</th><th scope="col">Consensus</th><th scope="col">Baseline</th>{% if crowd %}<th scope="col">Crowd</th>{% endif %}</tr></thead>
+        <thead><tr><th scope="col">Week</th><th scope="col">Matchups</th><th scope="col">AI</th><th scope="col">Consensus</th><th scope="col">Baseline</th>{% if crowd %}<th scope="col">Crowd</th>{% endif %}{% if experts %}<th scope="col">Experts</th>{% endif %}</tr></thead>
         <tbody>
           {% for week, w in report.weeks[g.key] | dictsort(reverse=true) %}
           <tr>
@@ -74,6 +82,7 @@
             <td>{{ pct(w.consensus) }}</td>
             <td>{{ pct(w.baseline) }}</td>
             {% if crowd %}<td>{{ pct(w.crowd) }}</td>{% endif %}
+            {% if experts %}<td>{{ pct(w.experts) }}</td>{% endif %}
           </tr>
           {% endfor %}
         </tbody>
@@ -85,7 +94,7 @@
       <summary>All {{ all | length }} matchups, with why the AI picked who it did</summary>
       <div class="table-wrap">
         <table>
-          <thead><tr><th scope="col">Week</th><th scope="col">Matchup (actual points)</th><th scope="col">AI</th><th scope="col">Consensus</th><th scope="col">Baseline</th>{% if crowd %}<th scope="col">Crowd</th>{% endif %}<th scope="col"></th></tr></thead>
+          <thead><tr><th scope="col">Week</th><th scope="col">Matchup (actual points)</th><th scope="col">AI</th><th scope="col">Consensus</th><th scope="col">Baseline</th>{% if crowd %}<th scope="col">Crowd</th>{% endif %}{% if experts %}<th scope="col">Experts</th>{% endif %}<th scope="col"></th></tr></thead>
           <tbody>
             {% for m in all %}
             <tr>
@@ -96,6 +105,7 @@
               <td>{% if m.consensus_pick %}{{ verdict(m.consensus_hit) }} {{ m.consensus_pick }}{% else %}<span class="muted">none</span>{% endif %}</td>
               <td>{{ verdict(m.baseline_hit) }} {{ m.baseline_pick }}</td>
               {% if crowd %}<td>{% if m.crowd_pick %}{{ verdict(m.crowd_hit) }} {{ m.crowd_pick }}{% else %}<span class="muted">no lean</span>{% endif %}</td>{% endif %}
+              {% if experts %}<td>{% if m.experts_pick %}{{ verdict(m.experts_hit) }} {{ m.experts_pick }}{% else %}<span class="muted">none</span>{% endif %}</td>{% endif %}
               <td><a class="why" href="/record/{{ m.rec_id }}">Why?</a></td>
             </tr>
             {% endfor %}
@@ -160,7 +170,10 @@
       byes and your scoring format. The three are compared only on matchups the AI answered.
       <strong>Reddit crowd:</strong> start/sit votes from r/fantasyfootball's "Who Do I Start" threads
       that week, one per comment; it has a pick only when one player leads by
-      {{ crowd_min_lead }}+ net votes (start minus sit), so it's scored on fewer matchups.</p>
+      {{ crowd_min_lead }}+ net votes (start minus sit), so it's scored on fewer matchups.
+      <strong>Experts head to head:</strong> the player more FantasyPros experts rank ahead of the other
+      in the question's scoring format, from their individual weekly ranks. It's fetched for a limited
+      number of matchups a day, so it's scored on fewer matchups.</p>
     <p>The ± is a 95% margin of error. The benchmark matchups are deliberately close calls (players the
       experts rank side by side), so all three methods are expected to land near 50%. Even a few points
       above that is a real edge.</p>

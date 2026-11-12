@@ -249,7 +249,9 @@ def test_ingest_runs_the_benchmark_only_when_due_and_with_a_key(tmp_path, monkey
 
     path = seed(tmp_path / "b.db")  # week 7, first Sunday kickoff Oct 25 1pm Eastern (17:00 UTC): due from 14:00
     calls = []
-    monkeypatch.setattr(ingest_main.benchmark, "run", lambda db, llm, season, week: calls.append(week) or 3)
+    monkeypatch.setattr(
+        ingest_main.benchmark, "run", lambda db, llm, season, week, fantasypros: calls.append(week) or 3
+    )
     with Database(path) as db:
         assert ingest_main.run_benchmark(db, 2026, datetime(2026, 10, 25, 12, 0, tzinfo=UTC)) == 0  # not yet
         monkeypatch.delenv("GEMINI_API_KEY", raising=False)

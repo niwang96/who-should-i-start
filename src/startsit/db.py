@@ -301,6 +301,19 @@ class RecommendationRow(TypedDict):
     packet_json: str  # the packet's structure: per-player scores and evidence items with ids and links
     visitor: str | None  # salted hash of the IP; None outside the web app
     crowd_pick: str | None  # the Reddit crowd's lean (EvidencePacket.crowd_pick); None if it has none
+    experts_pick: str | None  # most FantasyPros experts' pick head to head (EvidencePacket.experts_pick)
+
+
+class ExpertSplitRow(TypedDict):
+    """How many FantasyPros experts rank each of two players ahead of the other (`startsit.experts`),
+    as fetched that day: their individual weekly ranks, from the compare-players endpoint."""
+
+    season: int
+    week: int
+    pair: str  # the two FantasyPros ids, sorted, joined by ":"
+    fetched_day: str  # YYYY-MM-DD (UTC); one fetch per pair per day at most
+    fetched_at: str  # ISO 8601, UTC
+    splits_json: str  # {"ppr": {fantasypros_id: experts ranking him ahead, ..., "experts": n}, "half": ..., "std": ...}
 
 
 class EvaluationRow(TypedDict):
@@ -317,6 +330,7 @@ class EvaluationRow(TypedDict):
     consensus_pick: str | None  # raw FantasyPros consensus; None when it can't choose
     consensus_hit: int | None
     crowd_hit: int | None  # None when the crowd had no pick (or a tie)
+    experts_hit: int | None  # None without an expert split (or a tie)
 
 
 # Postgres REAL is single precision, so floats are DOUBLE PRECISION (same meaning in SQLite).
@@ -385,6 +399,7 @@ TABLES: dict[str, Table] = {
         Table("projections", ProjectionRow, ("season", "week", "fetched_date", "fantasypros_id")),
         Table("recommendations", RecommendationRow, ("rec_id",)),
         Table("evaluations", EvaluationRow, ("rec_id",)),
+        Table("expert_splits", ExpertSplitRow, ("season", "week", "pair", "fetched_day")),
     )
 }
 
@@ -767,6 +782,21 @@ class Database:
             (player_id, season, week, through_day or NO_CUTOFF),
         )
 
+    def expert_split(self, season: int, week: int, pair: str, until: str) -> ExpertSplitRow | None:
+        """The pair's newest expert split fetched at or before `until` (ISO 8601)."""
+        return cast(
+            "ExpertSplitRow | None",
+            self._one(
+                "SELECT * FROM expert_splits WHERE season = ? AND week = ? AND pair = ? AND fetched_at <= ? "
+                "ORDER BY fetched_at DESC LIMIT 1",
+                (season, week, pair, until),
+            ),
+        )
+
+    def expert_splits_fetched(self, day: str) -> int:
+        """How many expert splits were fetched on `day` (YYYY-MM-DD, UTC): FantasyPros calls spent."""
+        return int(self._scalar("SELECT count(*) AS n FROM expert_splits WHERE fetched_day = ?", (day,)) or 0)
+
     def latest_ranking(
         self, player_id: str, season: int, week: int, through_day: str | None = None
     ) -> RankingRow | None:
@@ -910,7 +940,7 @@ class Database:
         """Every scored recommendation of the season: the evaluation joined with what was shown."""
         return self.query(
             "SELECT e.*, r.scoring, r.pick, r.baseline_pick, r.confidence, r.source, r.visitor, r.packet_json, "
-            "r.crowd_pick, r.decision_json "
+            "r.crowd_pick, r.experts_pick, r.decision_json "
             "FROM evaluations e JOIN recommendations r ON r.rec_id = e.rec_id "
             "WHERE e.season = ? ORDER BY e.week, r.created_at",
             (season,),

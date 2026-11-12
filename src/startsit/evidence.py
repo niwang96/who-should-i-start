@@ -21,7 +21,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, NamedTuple, cast
 from zoneinfo import ZoneInfo
 
-from startsit import baseline
+from startsit import baseline, experts
 from startsit.db import (
     CrowdVoteRow,
     Database,
@@ -43,8 +43,19 @@ from startsit.scoring import LABELS, SCORINGS, Scoring, column, reception_discou
 NFLVERSE_URL = "https://github.com/nflverse/nflverse-data"
 
 EvidenceKind = Literal[
-    "availability", "team", "consensus", "projection", "matchup", "defense", "usage", "injury", "news", "crowd"
+    "availability",
+    "team",
+    "consensus",
+    "experts",
+    "projection",
+    "matchup",
+    "defense",
+    "usage",
+    "injury",
+    "news",
+    "crowd",
 ]
+FANTASYPROS_URL = "https://www.fantasypros.com/nfl/start/"
 
 NEWS_LOOKBACK = timedelta(days=7)
 NEWS_PER_PLAYER = 3
@@ -191,6 +202,8 @@ class PlayerEvidence:
     game_started: bool = False  # kicked off before the question was asked (locked in most leagues)
     crowd_start: int = 0  # this week's Reddit start/sit votes
     crowd_sit: int = 0
+    experts_ahead: int | None = None  # FantasyPros experts ranking him ahead of the other player
+    experts_total: int | None = None  # experts who ranked both
 
     @property
     def crowd_net(self) -> int:
@@ -230,6 +243,16 @@ class EvidencePacket:
         lead = ranked[0].crowd_net - ranked[1].crowd_net
         return ranked[0].player_id if lead >= CROWD_MIN_LEAD else None
 
+    @property
+    def experts_pick(self) -> str | None:
+        """The player more FantasyPros experts rank ahead, head to head; None without a split or on a tie."""
+        if len(self.players) != 2 or any(p.experts_ahead is None for p in self.players):
+            return None
+        a, b = self.players
+        if a.experts_ahead == b.experts_ahead:
+            return None
+        return a.player_id if (a.experts_ahead or 0) > (b.experts_ahead or 0) else b.player_id
+
     def verdict(self) -> str:
         leaders = baseline.leaders([p.score for p in self.players])
         names = self.names
@@ -261,6 +284,8 @@ class EvidencePacket:
                 game_started=p.get("game_started", False),
                 crowd_start=p.get("crowd_start", 0),
                 crowd_sit=p.get("crowd_sit", 0),
+                experts_ahead=p.get("experts_ahead"),
+                experts_total=p.get("experts_total"),
             )
             for p in data["players"]
         ]
@@ -841,8 +866,36 @@ def build_packet(
                 pe.items.append(EvidenceItem(f"E{n}", pid, fact.kind, fact.text, fact.source_url))
         players.append(pe)
 
+    if len(players) == 2:
+        n = add_expert_split(db, players, q, n)
     winner, margin = baseline.pick([p.score for p in players])
     return EvidencePacket(q, players, winner, margin)
+
+
+def add_expert_split(db: Database, players: list[PlayerEvidence], q: Question, n: int) -> int:
+    """Add each player's "experts" item from the stored FantasyPros expert split (`startsit.experts`),
+    fetched at or before the question; returns the last evidence number used."""
+    rankings = [
+        db.latest_ranking(p.player_id, q.season, q.week, through_day=q.as_of.date().isoformat()) for p in players
+    ]
+    if any(r is None for r in rankings):
+        return n
+    fp_ids = [str(r["fantasypros_id"]) for r in rankings if r]
+    until = utc_iso(q.as_of)
+    split = experts.split_for(db, q.season, q.week, fp_ids, q.scoring, until)
+    if split is None:
+        return n
+    day = experts.fetched_day(db, q.season, q.week, fp_ids, until)
+    total = split["experts"]
+    for p, fp_id, other in zip(players, fp_ids, reversed(players), strict=True):
+        p.experts_ahead, p.experts_total = split.get(fp_id, 0), total
+        n += 1
+        text = (
+            f"FantasyPros experts head to head ({q.label}, ranks as of {day}): {p.experts_ahead} of {total} "
+            f"rank {p.name} ahead of {other.name}"
+        )
+        p.items.append(EvidenceItem(f"E{n}", p.player_id, "experts", text, FANTASYPROS_URL))
+    return n
 
 
 # --- resolving a question from player names -------------------------------------------
