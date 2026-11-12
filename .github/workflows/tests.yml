@@ -5,6 +5,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # By hand (Actions > tests > Run workflow, any branch): on Nov 11 2026 GitHub left push and pull
+  # request runs stuck before the queue for hours, with no way to cancel or re-run them.
+  workflow_dispatch:
 
 jobs:
   checks:
