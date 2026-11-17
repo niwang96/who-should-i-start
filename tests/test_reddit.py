@@ -91,12 +91,53 @@ def test_reddit_get_waits_out_one_rate_limit_and_gives_up_quietly(monkeypatch):
 
 
 def test_fetch_comments_reads_each_thread_a_minute_apart_and_stops_when_refused(db):
-    pages = {reddit.SEARCH_URL: SEARCH, reddit.comments_url(reddit.latest_threads(SEARCH)[0]): COMMENTS}
+    hot = reddit.LISTING_URLS[0]
+    pages = {hot: SEARCH, reddit.comments_url(reddit.latest_threads(SEARCH)[0]): COMMENTS}
     slept: list[float] = []
     assert reddit.fetch_comments(db, 2026, NOW, get=pages.get, sleep=slept.append) == 3
-    assert slept == [reddit.SPACING] * 2  # before each thread; the second's feed was refused, so it stopped
+    # Before the new feed (refused: stop looking), then before each thread; the second's feed was
+    # refused, so it stopped.
+    assert slept == [reddit.SPACING] * 3
     assert db.last_run_at(reddit.RUN_SOURCE) is not None
-    assert reddit.fetch_comments(db, 2026, NOW, get=lambda url: None, sleep=slept.append) == 0  # search refused
+    assert reddit.fetch_comments(db, 2026, NOW, get=lambda url: None, sleep=slept.append) == 0  # all refused
+
+
+def wdis(slots, day="Wed 10/28/2026"):
+    return feed(
+        *(
+            entry(f"t3_{slot}", f"Official: [WDIS {slot}] - {day}", f"https://www.reddit.com/r/x/comments/{slot}/")
+            for slot in slots
+        )
+    )
+
+
+def test_threads_are_found_in_the_listings_before_search():
+    hot, new_feed, search = reddit.LISTING_URLS
+    asked: list[str] = []
+
+    def get(pages):
+        return lambda url: asked.append(url) or pages.get(url)
+
+    # All five in the hot feed: one request.
+    threads = reddit.find_threads(get({hot: wdis(["QB", "RB", "WR", "Flex", "K/TE/DEF"])}), lambda s: None)
+    assert len(threads) == 5 and asked == [hot]
+    # Some in hot (with yesterday's), the rest in new: search is never asked.
+    asked.clear()
+    yesterday = entry("t3_old", "Official: [WDIS QB] - Tue 10/27/2026", "https://www.reddit.com/r/x/comments/old/")
+    pages = {
+        hot: wdis(["QB", "RB"]).replace(b"</feed>", yesterday.encode() + b"</feed>"),
+        new_feed: wdis(["WR", "Flex", "K/TE/DEF"]),
+    }
+    threads = reddit.find_threads(get(pages), lambda s: None)
+    assert [t.thread_id for t in threads] == ["t3_QB", "t3_RB", "t3_WR", "t3_Flex", "t3_K/TE/DEF"]
+    assert asked == [hot, new_feed]
+    # Only search lists them (the listings answered without any).
+    asked.clear()
+    threads = reddit.find_threads(get({hot: feed(), new_feed: feed(), search: SEARCH}), lambda s: None)
+    assert [t.thread_id for t in threads] == ["t3_new1", "t3_new2"] and asked == [hot, new_feed, search]
+    # The first listing refused: stop, nothing found.
+    asked.clear()
+    assert reddit.find_threads(get({}), lambda s: None) == [] and asked == [hot]
 
 
 def test_a_fetch_is_due_every_six_hours(db):
