@@ -182,6 +182,9 @@ REDDIT_ROUTES = (
     "https://www.reddit.com/r/fantasyfootball/new.json?limit=5",
     "https://old.reddit.com/r/fantasyfootball/new.json?limit=5",
     "https://www.reddit.com/r/fantasyfootball/new/.rss?limit=5",
+    "https://www.reddit.com/r/fantasyfootball/hot/.rss?limit=5",
+    "https://www.reddit.com/r/fantasyfootball/.rss?limit=5",
+    "https://www.reddit.com/r/fantasyfootball/search.rss?q=title%3AWDIS&restrict_sr=1&sort=new&limit=5",
 )
 
 

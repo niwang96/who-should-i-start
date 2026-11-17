@@ -95,9 +95,9 @@ def test_fetch_comments_reads_each_thread_a_minute_apart_and_stops_when_refused(
     pages = {hot: SEARCH, reddit.comments_url(reddit.latest_threads(SEARCH)[0]): COMMENTS}
     slept: list[float] = []
     assert reddit.fetch_comments(db, 2026, NOW, get=pages.get, sleep=slept.append) == 3
-    # Before the new feed (refused: stop looking), then before each thread; the second's feed was
-    # refused, so it stopped.
-    assert slept == [reddit.SPACING] * 3
+    # Before each other listing (all refused, each still tried), then before each thread; the
+    # second thread's feed was refused, so it stopped.
+    assert slept == [reddit.SPACING] * (len(reddit.LISTING_URLS) - 1 + 2)
     assert db.last_run_at(reddit.RUN_SOURCE) is not None
     assert reddit.fetch_comments(db, 2026, NOW, get=lambda url: None, sleep=slept.append) == 0  # all refused
 
@@ -112,7 +112,7 @@ def wdis(slots, day="Wed 10/28/2026"):
 
 
 def test_threads_are_found_in_the_listings_before_search():
-    hot, new_feed, search = reddit.LISTING_URLS
+    hot, front, new_feed, search = reddit.LISTING_URLS
     asked: list[str] = []
 
     def get(pages):
@@ -126,18 +126,29 @@ def test_threads_are_found_in_the_listings_before_search():
     yesterday = entry("t3_old", "Official: [WDIS QB] - Tue 10/27/2026", "https://www.reddit.com/r/x/comments/old/")
     pages = {
         hot: wdis(["QB", "RB"]).replace(b"</feed>", yesterday.encode() + b"</feed>"),
+        front: feed(),
         new_feed: wdis(["WR", "Flex", "K/TE/DEF"]),
     }
     threads = reddit.find_threads(get(pages), lambda s: None)
     assert [t.thread_id for t in threads] == ["t3_QB", "t3_RB", "t3_WR", "t3_Flex", "t3_K/TE/DEF"]
-    assert asked == [hot, new_feed]
+    assert asked == [hot, front, new_feed]
     # Only search lists them (the listings answered without any).
     asked.clear()
-    threads = reddit.find_threads(get({hot: feed(), new_feed: feed(), search: SEARCH}), lambda s: None)
-    assert [t.thread_id for t in threads] == ["t3_new1", "t3_new2"] and asked == [hot, new_feed, search]
-    # The first listing refused: stop, nothing found.
+    threads = reddit.find_threads(get({hot: feed(), front: feed(), new_feed: feed(), search: SEARCH}), lambda s: None)
+    assert [t.thread_id for t in threads] == ["t3_new1", "t3_new2"] and asked == [hot, front, new_feed, search]
+
+
+def test_a_failed_feed_is_skipped_and_the_next_one_still_tried():
+    # Nov 17: hot/.rss answered 404 hours after working, and the fetch gave up on the spot.
+    hot, front = reddit.LISTING_URLS[:2]
+    asked: list[str] = []
+    slept: list[float] = []
+    pages = {front: wdis(["QB", "RB", "WR", "Flex", "K/TE/DEF"])}  # hot refused
+    threads = reddit.find_threads(lambda url: asked.append(url) or pages.get(url), slept.append)
+    assert len(threads) == 5 and asked == [hot, front] and slept == [reddit.SPACING]
     asked.clear()
-    assert reddit.find_threads(get({}), lambda s: None) == [] and asked == [hot]
+    assert reddit.find_threads(lambda url: asked.append(url) and None, lambda s: None) == []
+    assert asked == list(reddit.LISTING_URLS)  # all refused: each tried once
 
 
 def test_a_fetch_is_due_every_six_hours(db):

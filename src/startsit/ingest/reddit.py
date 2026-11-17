@@ -34,8 +34,11 @@ log = logging.getLogger("startsit.ingest.reddit")
 
 SEARCH_URL = "https://www.reddit.com/r/fantasyfootball/search.rss?q=title%3AWDIS&restrict_sr=1&sort=new&limit=25"
 # Where to look for the threads, in order, until the newest day's full set is found.
+# Each is tried even if an earlier one failed: hot/.rss answered 404 on Nov 17 hours after
+# working, so one feed's failure says nothing about the next one.
 LISTING_URLS = (
     "https://www.reddit.com/r/fantasyfootball/hot/.rss?limit=100",
+    "https://www.reddit.com/r/fantasyfootball/.rss?limit=100",  # the front page, also hot
     "https://www.reddit.com/r/fantasyfootball/new/.rss?limit=100",
     SEARCH_URL,
 )
@@ -128,16 +131,18 @@ def find_threads(
     get: Callable[[str], bytes | None] = reddit_get, sleep: Callable[[float], None] = time.sleep
 ) -> list[Thread]:
     """The newest day's WDIS threads, from the listing feeds in order (a minute apart) until all
-    SLOTS are found; stops at the first refusal, keeping what was found."""
+    SLOTS are found. A feed that fails is skipped (the next is still tried a minute later)."""
     found: list[Thread] = []
     for n, url in enumerate(LISTING_URLS):
         if n:
             sleep(SPACING)
         body = get(url)
         if body is None:
-            break
+            continue
         threads = wdis_threads(body)
-        log.info("reddit %s: %s WDIS threads", url.split("/r/fantasyfootball/")[1].split("?")[0], len(threads))
+        log.info(
+            "reddit %s: %s WDIS threads", url.split("/r/fantasyfootball/")[1].split("?")[0] or ".rss", len(threads)
+        )
         found += threads
         if len(newest_day(found)) >= SLOTS:
             break
