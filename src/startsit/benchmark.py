@@ -165,7 +165,10 @@ def run(
             sleep(pause)
         before = llm.remaining(clock())
         experts.ensure(db, fantasypros, season, week, [a, b], clock())
-        packet = build_packet(db, [a, b], scoring, season, week, as_of=asked_at)
+        # The live set's question is asked now, after its split was fetched (a time fixed at the
+        # start of the run would hide every split fetched since, as no-peeking data).
+        question_at = as_of or clock()
+        packet = build_packet(db, [a, b], scoring, season, week, as_of=question_at)
         decision = decide(db, packet, llm)
         pause = CALL_SPACING * max(0, before - llm.remaining(clock()))
         if decision.fallback in NOT_ANSWERED:
@@ -174,7 +177,7 @@ def run(
             )
             complete = False
             break
-        record_recommendation(db, packet, decision, tag, created_at=asked_at)
+        record_recommendation(db, packet, decision, tag, created_at=question_at)
         logged += 1
     if complete:
         db.record_run(marker(tag), season, week, logged)

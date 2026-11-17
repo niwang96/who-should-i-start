@@ -113,6 +113,25 @@ def test_run_fetches_each_matchups_expert_split_first(week8, monkeypatch):
     assert len(fetched) == 3 and all(c is client and len(ids) == 2 for c, ids in fetched)
 
 
+def test_each_live_question_is_asked_after_its_expert_split_is_fetched(week8, monkeypatch):
+    """A time fixed at the start of the run would hide every split fetched later (no peeking)."""
+    from datetime import timedelta
+
+    from startsit import experts
+
+    ticks = iter(SUNDAY_MORNING + timedelta(seconds=n) for n in range(1000))
+    fetched, asked = [], []
+    monkeypatch.setattr(experts, "ensure", lambda db, client, season, week, ids, now: fetched.append(now))
+    build = benchmark.build_packet
+    monkeypatch.setattr(
+        benchmark, "build_packet", lambda *a, as_of, **k: asked.append(as_of) or build(*a, as_of=as_of, **k)
+    )
+    llm = BudgetedLLM(FakeProvider(respond=agree), week8, "benchmark", 10, clock=lambda: SUNDAY_MORNING)
+    benchmark.run(week8, llm, 2026, 8, clock=lambda: next(ticks), sleep=lambda s: None, fantasypros=object())
+    assert len(asked) == len(fetched) == 3
+    assert all(question > fetch for fetch, question in zip(fetched, asked, strict=True))
+
+
 def test_run_stops_when_the_budget_is_spent(week8):
     llm = BudgetedLLM(FakeProvider(respond=agree), week8, "benchmark", 1, clock=lambda: SUNDAY_MORNING)
     assert benchmark.run(week8, llm, 2026, 8, clock=lambda: SUNDAY_MORNING, sleep=lambda s: None) == 1
