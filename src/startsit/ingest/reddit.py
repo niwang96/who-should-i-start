@@ -6,7 +6,9 @@ are a minute apart, a 429 waits out Reddit's own reset once, and anything else t
 means no Reddit data this run (CLAUDE.md: optional, degrades gracefully).
 
 Each run reads the newest day's WDIS threads (one per position: QB, RB, WR, Flex, K/TE/DEF),
-found with the subreddit's search feed, and stores their comments. The LLM step that turns
+found in the subreddit's listing feeds, and stores their comments. Search was the first way to find
+them, but by Nov 2026 Reddit refused the search feed from GitHub Actions (403) while still serving
+the listings, so search is only the last resort. The LLM step that turns
 comments into start/sit votes is `startsit.ingest.reddit_extract`.
 """
 
@@ -31,6 +33,13 @@ from startsit.ingest.news import ATOM, clean_text, parse_date
 log = logging.getLogger("startsit.ingest.reddit")
 
 SEARCH_URL = "https://www.reddit.com/r/fantasyfootball/search.rss?q=title%3AWDIS&restrict_sr=1&sort=new&limit=25"
+# Where to look for the threads, in order, until the newest day's full set is found.
+LISTING_URLS = (
+    "https://www.reddit.com/r/fantasyfootball/hot/.rss?limit=100",
+    "https://www.reddit.com/r/fantasyfootball/new/.rss?limit=100",
+    SEARCH_URL,
+)
+SLOTS = 5  # WDIS threads a day: QB, RB, WR, Flex, K/TE/DEF
 # "Official: [WDIS RB] - Tue 10/27/2026"; the date is the thread's day (US Eastern).
 THREAD_TITLE = re.compile(r"^Official: \[WDIS (?P<slot>[^\]]+)\] - \w{3} (?P<day>\d{1,2}/\d{1,2}/\d{4})$")
 COMMENTS_LIMIT = 100  # comments per thread feed
@@ -93,17 +102,46 @@ def _entries(body: bytes) -> list[dict[str, str]]:
     return out
 
 
-def latest_threads(search_body: bytes) -> list[Thread]:
-    """The newest day's WDIS threads from the search feed (one per position slot)."""
-    threads = [
+def wdis_threads(body: bytes) -> list[Thread]:
+    """Every WDIS thread in a feed, in feed order."""
+    return [
         Thread(e["id"], e["title"], e["link"], m["day"])
-        for e in _entries(search_body)
+        for e in _entries(body)
         if (m := THREAD_TITLE.match(e["title"])) and e["link"]
     ]
+
+
+def newest_day(threads: list[Thread]) -> list[Thread]:
+    """The newest day's threads, deduplicated, in the order found."""
     if not threads:
         return []
     newest = max(threads, key=lambda t: datetime.strptime(t.day, "%m/%d/%Y")).day
-    return list({t.thread_id: t for t in threads if t.day == newest}.values())  # deduped, in feed order
+    return list({t.thread_id: t for t in threads if t.day == newest}.values())
+
+
+def latest_threads(body: bytes) -> list[Thread]:
+    """The newest day's WDIS threads in one feed (one per position slot)."""
+    return newest_day(wdis_threads(body))
+
+
+def find_threads(
+    get: Callable[[str], bytes | None] = reddit_get, sleep: Callable[[float], None] = time.sleep
+) -> list[Thread]:
+    """The newest day's WDIS threads, from the listing feeds in order (a minute apart) until all
+    SLOTS are found; stops at the first refusal, keeping what was found."""
+    found: list[Thread] = []
+    for n, url in enumerate(LISTING_URLS):
+        if n:
+            sleep(SPACING)
+        body = get(url)
+        if body is None:
+            break
+        threads = wdis_threads(body)
+        log.info("reddit %s: %s WDIS threads", url.split("/r/fantasyfootball/")[1].split("?")[0], len(threads))
+        found += threads
+        if len(newest_day(found)) >= SLOTS:
+            break
+    return newest_day(found)
 
 
 def comments(body: bytes, thread: Thread, now: datetime) -> list[RedditCommentRow]:
@@ -156,8 +194,7 @@ def fetch_comments(
     sleep: Callable[[float], None] = time.sleep,
 ) -> int:
     """Store the comments of the newest day's WDIS threads; returns how many were stored."""
-    body = get(SEARCH_URL)
-    threads = latest_threads(body) if body else []
+    threads = find_threads(get, sleep)
     stored = 0
     for thread in threads:
         sleep(SPACING)

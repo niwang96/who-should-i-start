@@ -210,18 +210,21 @@ def test_reddit_is_readable_from_this_runner():
 BUSY_THREAD_COMMENTS = 40  # enough comments that some must be replies naming players
 
 
-def test_reddit_wdis_comments_become_crowd_votes(gemini, live_db):
-    # Step 6b end to end on live data: find today's WDIS threads, read one thread's comments with
-    # the real fetcher (60 s after the search, waiting out a 429 once), and extract votes in one
-    # Gemini call. Skips if Reddit is throttling this runner: that's Reddit's limit, not our bug.
+def test_reddit_wdis_comments_become_crowd_votes(gemini, live_db, caplog):
+    # Step 6b end to end on live data: find today's WDIS threads in the listing feeds (the log shows
+    # how many each feed listed), read one thread's comments with the real fetcher (a minute later,
+    # waiting out a 429 once), and extract votes in one Gemini call. Skips if Reddit is throttling
+    # this runner: that's Reddit's limit, not our bug.
+    import logging
+
     from startsit.ingest import reddit, reddit_extract
 
-    body = reddit.reddit_get(reddit.SEARCH_URL)
-    if body is None:
-        pytest.skip("Reddit refused the search feed (rate limit on a shared runner IP)")
-    threads = reddit.latest_threads(body)
+    caplog.set_level(logging.INFO, logger="startsit.ingest.reddit")
+    threads = reddit.find_threads()
     print("threads:", [t.title for t in threads])
-    assert threads, "no WDIS threads in the search feed"
+    if not threads and not any("WDIS threads" in r.getMessage() for r in caplog.records):
+        pytest.skip("Reddit refused the first listing feed (rate limit on a shared runner IP)")
+    assert threads, "no WDIS threads in any listing feed or search"
     time.sleep(reddit.SPACING)
     feed = reddit.reddit_get(reddit.comments_url(threads[0]))
     if feed is None:
