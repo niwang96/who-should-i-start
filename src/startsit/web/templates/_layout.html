@@ -12,10 +12,12 @@
   <meta property="og:image" content="{{ url_for('static', path='og.png') }}">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="theme-color" content="#0b6e4f">
+  <meta name="color-scheme" content="light dark">
   <link rel="icon" href="{{ url_for('static', path='favicon.svg') }}" type="image/svg+xml">
   <link rel="icon" href="{{ url_for('static', path='favicon-32.png') }}" type="image/png" sizes="32x32">
   <link rel="apple-touch-icon" href="{{ url_for('static', path='apple-touch-icon.png') }}">
   <meta name="htmx-config" content='{"includeIndicatorStyles": false}'>
+  <script src="{{ url_for('static', path='theme.js') }}"></script>
   <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}">
   <script src="{{ url_for('static', path='htmx-2.0.4.min.js') }}" defer></script>
   <script src="{{ url_for('static', path='app.js') }}" defer></script>
@@ -25,6 +27,7 @@
     <div class="brand">
       <h1><a href="/">Who Should I Start?</a></h1>
       <nav>{% block nav %}<a href="/record">Track record</a>{% endblock %}</nav>
+      <button type="button" id="theme-toggle" class="theme-toggle" hidden aria-label="Switch light or dark mode"></button>
     </div>
     {% if info %}
     <div class="header-meta">

@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -370,3 +371,17 @@ def test_an_answer_fetches_the_expert_split_first_and_shows_it(path):
     with Database(path) as db:
         [row] = db.query("select experts_pick from recommendations")
     assert row["experts_pick"] == "A"
+
+
+def test_dark_mode_follows_the_browser_and_a_remembered_toggle(path):
+    client = client_for(path)
+    page = client.get("/").text
+    head = page.split("</head>")[0]
+    # Applied before the page is drawn: a blocking script in <head>, ahead of the stylesheet.
+    assert re.search(r'<script src="[^"]*/static/theme.js"></script>', head)  # no defer
+    assert head.index("theme.js") < head.index("style.css")
+    assert 'id="theme-toggle"' in page and "hidden" in page.split('id="theme-toggle"')[1].split(">")[0]
+    js = client.get("/static/theme.js").text
+    assert "localStorage" in js and "prefers-color-scheme: dark" in js
+    css = client.get("/static/style.css").text
+    assert ':root:not([data-theme="light"])' in css and ':root[data-theme="dark"]' in css

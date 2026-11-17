@@ -1,4 +1,5 @@
 :root {
+  color-scheme: light;
   --bg: #f7f7f5;
   --card: #ffffff;
   --text: #1d1d1f;
@@ -13,8 +14,11 @@
   --error-line: #e57373;
 }
 
+/* Dark mode: the browser's setting, unless the visitor chose with the header toggle (theme.js sets
+   data-theme on <html>). The same colors twice: for the browser setting and for the choice. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
     --bg: #141517;
     --card: #1e2023;
     --text: #ececec;
@@ -28,6 +32,22 @@
     --error-bg: #3b1e1e;
     --error-line: #b85c5c;
   }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #141517;
+  --card: #1e2023;
+  --text: #ececec;
+  --muted: #a7abb1;
+  --line: #34373c;
+  --accent: #3fbf8f;
+  --accent-text: #0d1f18;
+  --accent-soft: #1b2d26;
+  --warn-bg: #3a2c16;
+  --warn-line: #a8782f;
+  --error-bg: #3b1e1e;
+  --error-line: #b85c5c;
 }
 
 * { box-sizing: border-box; }
@@ -52,6 +72,19 @@ header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content:
 .brand { display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap; }
 nav a { font-size: 0.95rem; font-weight: 600; text-decoration: none; }
 nav a:hover { text-decoration: underline; }
+.theme-toggle {
+  align-self: center;
+  padding: 0.15rem 0.5rem;
+  font-size: 1rem;
+  font-weight: 400;
+  line-height: 1.4;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.theme-toggle:hover { border-color: var(--accent); }
+.theme-toggle[hidden] { display: none; }
 .header-meta { text-align: right; }
 .week { margin: 0; }
 .freshness, .pos, .baseline, .meta, footer, .about { color: var(--muted); font-size: 0.85rem; }
