@@ -48,7 +48,7 @@
       <div class="tile">
         <span class="label">Reddit crowd</span>
         <span class="value">{{ pct(s.crowd) }}</span>
-        <span class="detail">{{ of(s.crowd) }} · only where it leaned</span>
+        <span class="detail">{{ of(s.crowd) }} · only where it leaned, when available</span>
       </div>
       {% endif %}
       {% if s.experts.decided %}
@@ -171,6 +171,8 @@
       <strong>Reddit crowd:</strong> start/sit votes from r/fantasyfootball's "Who Do I Start" threads
       that week, one per comment; it has a pick only when one player leads by
       {{ crowd_min_lead }}+ net votes (start minus sit), so it's scored on fewer matchups.
+      It's collected only when Reddit lets us read those threads: since mid-November 2026 Reddit
+      mostly refuses our automated reads, so many weeks have few or no crowd picks.
       <strong>Experts head to head:</strong> the player more FantasyPros experts rank ahead of the other
       in the question's scoring format, from their individual weekly ranks. It's fetched for a limited
       number of matchups a day, so it's scored on fewer matchups.</p>
